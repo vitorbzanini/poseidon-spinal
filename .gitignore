@@ -46,6 +46,9 @@ bin/
 *.vcd
 !tester/src/test/resources/*.vhd
 
+**/.simvision/
+**/xcelium.d/
+**/waves.shm/
 
 simWorkspace/
 tmp/

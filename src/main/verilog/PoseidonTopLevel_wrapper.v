@@ -23,7 +23,7 @@ module PoseidonTopLevel_wrapper (
 
         .io_output_valid   (io_output_valid ),
         .io_output_ready   (io_output_ready ),
-        .io_output_last    (output_last     ),
+        //.io_output_last    (output_last     ),
         .io_output_payload (output_payload  ),
         .clk               (clk             ),
         .reset             (reset           )

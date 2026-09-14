@@ -15,7 +15,7 @@ def golden_model_x5(x: int) -> str:
 
 if __name__ == "__main__":
     # Exemplo prático de validação
-    x_teste = int("2c31b76f79ec43792abeb60fc312d5907d8e1e65ccd7348344abb1594953e0fc", 16)
+    x_teste = int("2f4cf8a3c7f85b0a120fa9906e34e309b3b3b48824c32a468d70f835d0abb121", 16)
     resultado_hex = golden_model_x5(x_teste)
     
     print(f"Entrada x = {x_teste}")

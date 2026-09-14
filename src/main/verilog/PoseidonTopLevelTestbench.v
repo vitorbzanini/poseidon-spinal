@@ -148,7 +148,7 @@ module PoseidonTester ();
                     $display("error output %d: %h",output_counter, io_output_payload);
                     $display(" test fail !!!");
                     $display("cycles: %d", cycle_counter);
-                    $finish();
+                    //$finish();
                 end
                 $display("res %d: %h correct",output_counter, io_output_payload);
                 output_counter <= output_counter + 1;

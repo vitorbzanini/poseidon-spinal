@@ -11,7 +11,6 @@ module PoseidonTester ();
     localparam StateSize   = 9;
     localparam CaseNum     = 3;
 
-
     // init test cases
     reg [9*255-1:0] random_inputs[2:0];
     reg [255-1  :0] ref_outputs[2:0];
@@ -26,7 +25,6 @@ module PoseidonTester ();
         random_inputs[0][255*7-1:255*6] = 255'hefc77ca3994848c930847c18201a94436d5cc71844058f6a46e4af18a8f1c6e;
         random_inputs[0][255*8-1:255*7] = 255'h4650402fa402b6bce4833ecb497890a3fa88bfe17d1f581cd09e6d72db8a73df;
         random_inputs[0][255*9-1:255*8] = 255'h2ac931db5390a68274ec06f7f3b3b8c433cd692afce80da1a27d1ce1f0efb051;
-
         ref_outputs[0] = 255'h71c3c87b2a0358e422218dccbed6eff1fb0e4d0370134ff689a0b95c17fa4fb8;
         
         // case 1
@@ -39,7 +37,6 @@ module PoseidonTester ();
         random_inputs[1][255*7-1:255*6] = 255'h3759563725df7bef5b924fe22c379cf15cc82927a5211061eb17c1b90ef794d2;
         random_inputs[1][255*8-1:255*7] = 255'h3dac033097dbea6d64dacc3fa7b5c0430a497d7bc1c8f566e093a81f14dc2457;
         random_inputs[1][255*9-1:255*8] = 255'h3ae6041f1d29bd3b6943669bcb20712b578d021b7f89b937d778b5897c247ad2;
-
         ref_outputs[1] = 255'h19ae8bfc87cbef97838643d1b12af08105bbd319f28cb8c6f91e5c9f061ba0b;
 
         //case 2
@@ -52,10 +49,8 @@ module PoseidonTester ();
         random_inputs[2][255*7-1:255*6] = 255'h17dda1af1c465252939389b40cf7e44060508b76adc903c21bfafc3b3125b5db;
         random_inputs[2][255*8-1:255*7] = 255'h6d485981cf3ba66c51495d546f298b2afa4d214315119e5c655260821aa8e468;
         random_inputs[2][255*9-1:255*8] = 255'h549b07ae6c99841e1fab7dfe0ba2f4b20f7054f1681806285ddae892a1728491;
-        
         ref_outputs[2] = 255'hccd0692f9e592e5bdb1e47dd83d84e058d7694e50aac5c05992453474916df3;
     end
-
 
     // generate clk and reset signal
     reg [49:0] cycle_counter;
@@ -69,7 +64,6 @@ module PoseidonTester ();
         else begin
             cycle_counter <= cycle_counter + 1;
         end
-
     end
     initial begin
         clk = 0;
@@ -81,17 +75,16 @@ module PoseidonTester ();
         #(2*ClockPeriod) reset = 0;
     end
 
-
     // drive input ports
-    reg [254:0] io_input_payload;
+    // Modificado para o array de 9 blocos
+    logic [0:8][254:0] io_input_payload;
     reg io_input_valid;
     wire io_input_ready, io_input_last;
     wire input_handshake = io_input_valid & io_input_ready;
     reg [1:0] input_counter;
-    reg [4:0] index_counter;
+
     always @(posedge clk) begin
         if(reset) begin
-            index_counter <= 0;
             input_counter <= 0;
             io_input_valid <= 0;
         end
@@ -104,37 +97,29 @@ module PoseidonTester ();
             end
 
             if(input_handshake) begin
-                if(io_input_last) begin
-                    $display("input %d successfully", input_counter);
-                    input_counter <= input_counter + 1;
-                    index_counter <= 0;
-                end
-                else begin
-                    index_counter <= index_counter + 1;
-                end
+                $display("input %d sent in parallel successfully", input_counter);
+                //input_counter <= input_counter + 1;
             end
         end
     end
-    assign io_input_last = (index_counter == 8);
-    always @(*) begin
-        case(index_counter)
-            0:io_input_payload = random_inputs[input_counter][255*1-1:255*0];
-            1:io_input_payload = random_inputs[input_counter][255*2-1:255*1];
-            2:io_input_payload = random_inputs[input_counter][255*3-1:255*2];
-            3:io_input_payload = random_inputs[input_counter][255*4-1:255*3];
-            4:io_input_payload = random_inputs[input_counter][255*5-1:255*4];
-            5:io_input_payload = random_inputs[input_counter][255*6-1:255*5];
-            6:io_input_payload = random_inputs[input_counter][255*7-1:255*6];
-            7:io_input_payload = random_inputs[input_counter][255*8-1:255*7];
-            8:io_input_payload = random_inputs[input_counter][255*9-1:255*8];
-        endcase
-    end
+    
+    // Como os 9 dados vão de uma vez, é sempre o 'last' da transação
+    assign io_input_last = 1'b1;
 
+    // Conecta o array de inputs de forma limpa usando um loop generate combinacional
+    genvar i;
+    generate
+        for(i = 0; i < 9; i++) begin : gen_inputs
+            assign io_input_payload[i] = random_inputs[input_counter][255*(i+1)-1 : 255*i];
+        end
+    endgenerate
 
     // check output
     wire io_output_last, io_output_valid, io_output_ready;
     wire output_handshake = io_output_valid & io_output_ready;
-    wire [254:0] io_output_payload;
+    
+    // Modificado para receber os 9 blocos resultantes
+    wire [0:8][254:0] io_output_payload;
     reg [1:0] output_counter;
 
     assign io_output_ready = 1'b1;
@@ -144,14 +129,17 @@ module PoseidonTester ();
         end
         else begin
             if(output_handshake) begin
-                if( io_output_payload != ref_outputs[output_counter]) begin
-                    $display("error output %d: %h",output_counter, io_output_payload);
+                // Checa a primeira posição do estado (índice 0). 
+                // Se a referência final no seu wrapper for outra posição, mude de [0] para o índice correto!
+                if( io_output_payload[0] != ref_outputs[output_counter]) begin
+                    $display("error output %d: obtido %h", output_counter, io_output_payload[0]);
                     $display(" test fail !!!");
                     $display("cycles: %d", cycle_counter);
-                    //$finish();
+                    $finish();
+                end else begin
+                    $display("res %d: %h correct", output_counter, io_output_payload[0]);
+                    output_counter <= output_counter + 1;
                 end
-                $display("res %d: %h correct",output_counter, io_output_payload);
-                output_counter <= output_counter + 1;
             end
 
             if(output_counter == 3) begin
@@ -166,14 +154,13 @@ module PoseidonTester ();
         .io_input_valid    (io_input_valid   ),
         .io_input_ready    (io_input_ready   ),
         .io_input_last     (io_input_last    ),
-        .io_input_payload  (io_input_payload ),
+        .io_input_payload  (io_input_payload ), // Entra como um array [0:8][254:0]
         .io_output_valid   (io_output_valid  ),
         .io_output_ready   (io_output_ready  ),
         .io_output_last    (io_output_last   ),
-        .io_output_payload (io_output_payload),
+        .io_output_payload (io_output_payload), // Sai como um array [0:8][254:0]
         .clk(clk),
         .reset(reset)
     );
 
-    
 endmodule

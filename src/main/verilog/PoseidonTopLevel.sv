@@ -1,4 +1,4 @@
-module PoseidonTopLevel #(
+module sbox #(
     parameter bit PARALLEL = 0
 )(
     input               io_input_valid,

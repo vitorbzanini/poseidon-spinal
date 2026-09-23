@@ -12,8 +12,8 @@ module PoseidonTester ();
     localparam CaseNum     = 3;
 
     // init test cases
-    reg [9*255-1:0] random_inputs[2:0];
-    reg [255-1  :0] ref_outputs[2:0];
+    logic [9*255-1:0] random_inputs[2:0];
+    logic [255-1  :0] ref_outputs[2:0];
     initial begin
         //case 0
         random_inputs[0][255*1-1:255*0] = 255'h2c31b76f79ec43792abeb60fc312d5907d8e1e65ccd7348344abb1594953e0fc;
@@ -53,8 +53,17 @@ module PoseidonTester ();
     end
 
     // generate clk and reset signal
-    reg [49:0] cycle_counter;
-    reg clk, reset;
+    logic [49:0] cycle_counter;
+    logic clk, reset;
+    
+    // NOVO: Sinal para controlar a rodada
+    logic [6:0] round_idx;
+
+    initial begin cycle_counter = 0; end
+    
+    initial begin
+        round_idx = 7'd0; // Forçando a rodada 0 para o teste inicial
+    end
 
     initial begin cycle_counter = 0; end
     always @(posedge clk) begin
@@ -78,10 +87,10 @@ module PoseidonTester ();
     // drive input ports
     // Modificado para o array de 9 blocos
     logic [0:8][254:0] io_input_payload;
-    reg io_input_valid;
-    wire io_input_ready, io_input_last;
-    wire input_handshake = io_input_valid & io_input_ready;
-    reg [1:0] input_counter;
+    logic io_input_valid;
+    logic io_input_ready, io_input_last;
+    logic input_handshake = io_input_valid & io_input_ready;
+    logic [1:0] input_counter;
 
     always @(posedge clk) begin
         if(reset) begin
@@ -115,12 +124,12 @@ module PoseidonTester ();
     endgenerate
 
     // check output
-    wire io_output_last, io_output_valid, io_output_ready;
-    wire output_handshake = io_output_valid & io_output_ready;
+    logic io_output_last, io_output_valid, io_output_ready;
+    logic output_handshake = io_output_valid & io_output_ready;
     
     // Modificado para receber os 9 blocos resultantes
-    wire [0:8][254:0] io_output_payload;
-    reg [1:0] output_counter;
+    logic [0:8][254:0] io_output_payload;
+    logic [1:0] output_counter;
 
     assign io_output_ready = 1'b1;
     always@(posedge clk) begin
@@ -154,11 +163,14 @@ module PoseidonTester ();
         .io_input_valid    (io_input_valid   ),
         .io_input_ready    (io_input_ready   ),
         .io_input_last     (io_input_last    ),
-        .io_input_payload  (io_input_payload ), // Entra como um array [0:8][254:0]
+        .io_input_payload  (io_input_payload ), 
+        
+        .round_idx         (round_idx        ), // <-- A PORTA CONECTADA AQUI
+        
         .io_output_valid   (io_output_valid  ),
         .io_output_ready   (io_output_ready  ),
         .io_output_last    (io_output_last   ),
-        .io_output_payload (io_output_payload), // Sai como um array [0:8][254:0]
+        .io_output_payload (io_output_payload), 
         .clk(clk),
         .reset(reset)
     );

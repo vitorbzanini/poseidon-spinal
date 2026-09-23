@@ -46,15 +46,15 @@ def mds_mixing(state: list[int]) -> list[int]:
 if __name__ == "__main__":
     # 1. Definindo o estado de teste EXATAMENTE igual ao testbench do SystemVerilog (Case 0)
     state_in = [
-        0x2c31b76f79ec43792abeb60fc312d5907d8e1e65ccd7348344abb1594953e0fc, # random_inputs[0][255*1-1:255*0]
-        0x5699fc150f68c6353b5b557f576df53d6ace988e132fe8a3b34c9d25410aace2, # random_inputs[0][255*2-1:255*1]
-        0x2f4cf8a3c7f85b0a120fa9906e34e309b3b3b48824c32a468d70f835d0abb121, # random_inputs[0][255*3-1:255*2]
-        0x2d7b0d831dc54c52bd4f12a493b12086c7cefc1257ec99a065a02ca8b181d3d9, # random_inputs[0][255*4-1:255*3]
-        0x57717f05ce0eb4ffac62271fa0ded7c0938e813c7ca9c093f52bf51a5c84eaa1, # random_inputs[0][255*5-1:255*4]
-        0x35c66831a0d5e6a615d8434307247c1639b860ac0e51db088a462ce455694c00, # random_inputs[0][255*6-1:255*5]
-        0xefc77ca3994848c930847c18201a94436d5cc71844058f6a46e4af18a8f1c6e, # random_inputs[0][255*7-1:255*6]
-        0x4650402fa402b6bce4833ecb497890a3fa88bfe17d1f581cd09e6d72db8a73df, # random_inputs[0][255*8-1:255*7]
-        0x2ac931db5390a68274ec06f7f3b3b8c433cd692afce80da1a27d1ce1f0efb051  # random_inputs[0][255*9-1:255*8]
+        0x252d1d2f1453261183c18be330ded5d5eefbc54ab165ad188843f2af3c48a3f4, # random_inputs[0][255*1-1:255*0]
+        0x6367975d1becc8606102b0d2205692be1fc8fc06e65e419754c1ed6e81c7991b, # random_inputs[0][255*2-1:255*1]
+        0x0c9a2260b506597aa6a46c6d76e90f12661a98731bdb5b67f912b0a4cf41e749, # random_inputs[0][255*3-1:255*2]
+        0x3f72d8e7b7d3c15c5f8c26bbce0f079bd942cca104a70edbff229833e8faf3e3, # random_inputs[0][255*4-1:255*3]
+        0x6641754988a965894e8cbe25c303575d85153ff3a2f293c6f00c7f5dd1911cca, # random_inputs[0][255*5-1:255*4]
+        0x2cfeb6059a23764190ce7985be6ca0c6bb63356f1d5ade7edc60efbccbe0a1e2, # random_inputs[0][255*6-1:255*5]
+        0x18fd083297d83db0359abb3518680f0580056397899b8a28e7f4729043af4db7, # random_inputs[0][255*7-1:255*6]
+        0x47b02213352e45dfd58f8f494eb836284a5637f315199d8e52d91a5235534f03, # random_inputs[0][255*8-1:255*7]
+        0x1605fe9e7b960a9722f9caf3f35a3c8b430fc0b718fa89bb9a5f0b138722409b  # random_inputs[0][255*9-1:255*8]
     ]
 
     # 2. Passando pela etapa da S-Box (Elevando à 5 potência mod P)

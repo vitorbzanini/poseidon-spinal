@@ -107,7 +107,7 @@ module PoseidonTester ();
 
             if(input_handshake) begin
                 $display("input %d sent in parallel successfully", input_counter);
-                //input_counter <= input_counter + 1;
+                input_counter <= input_counter + 1;
             end
         end
     end
@@ -138,8 +138,6 @@ module PoseidonTester ();
         end
         else begin
             if(output_handshake) begin
-                // Checa a primeira posição do estado (índice 0). 
-                // Se a referência final no seu wrapper for outra posição, mude de [0] para o índice correto!
                 if( io_output_payload[0] != ref_outputs[output_counter]) begin
                     $display("error output %d: obtido %h", output_counter, io_output_payload[0]);
                     $display(" test fail !!!");

@@ -9,7 +9,7 @@ module PoseidonTopLevel_wrapper #(
     
     input      [0:8][254:0] io_input_payload, 
     
-    // NOVO: Necessário para saber qual constante buscar
+    // Mantido para compatibilidade com a versão paralela
     input      [6:0]        round_idx, 
     
     output              io_output_valid,
@@ -25,21 +25,29 @@ module PoseidonTopLevel_wrapper #(
     if (SEQUENTIAL) begin: SEQUENTIAL_IMPLEMENTATION 
 
         // --- FSM States ---
-        typedef enum logic [2:0] {
+        typedef enum logic [3:0] {
             IDLE,
             FEED_SBOX,
             WAIT_SBOX,
+            BYPASS_SBOX,    // NOVO: Atalho para os Partial Rounds
             START_MATRIX,
-            WAIT_MATRIX
+            WAIT_MATRIX,
+            DONE_STATE      // NOVO: Finalizou as 65 rodadas
         } state_e;
         
         state_e current_state, next_state;
 
         // --- Registers & Buffers ---
+        logic [6:0] internal_round_idx; // Contador interno de rodadas (0 a 64)
         logic [3:0] sbox_idx; // Counts from 0 to 8
         logic [0:8][254:0] latched_input;
         logic [0:8][254:0] sbox_outputs;
         logic last_reg;
+
+        // --- Controle de Partial Rounds ---
+        // As rodadas parciais vão do índice 4 ao 60 (total 57 rodadas)
+        logic is_partial_round;
+        assign is_partial_round = (internal_round_idx >= 7'd4) && (internal_round_idx <= 7'd60);
 
         // --- Single S-box Signals ---
         logic sbox_in_valid;
@@ -63,8 +71,8 @@ module PoseidonTopLevel_wrapper #(
         logic [254:0] seq_selected_constant;
         logic [254:0] seq_adder_out;
 
-        // Calcula o índice: (rodada atual * 9) + elemento atual
-        assign seq_const_idx = (round_idx * 9) + sbox_idx;
+        // Agora usa o internal_round_idx da FSM em vez da porta externa
+        assign seq_const_idx = (internal_round_idx * 9) + sbox_idx;
         assign seq_selected_constant = ROUND_CONSTANTS[seq_const_idx];
 
         ModAdder #() add_round_const_seq (
@@ -73,7 +81,6 @@ module PoseidonTopLevel_wrapper #(
             .res_o(seq_adder_out)
         );
 
-        // Mux the latched input array + constant into the single S-box
         assign sbox_in_payload = seq_adder_out;
 
         // ==========================================
@@ -116,6 +123,7 @@ module PoseidonTopLevel_wrapper #(
                 latched_input <= '0;
                 sbox_outputs <= '0;
                 last_reg <= 1'b0;
+                internal_round_idx <= '0;
             end else begin
                 current_state <= next_state;
 
@@ -125,6 +133,7 @@ module PoseidonTopLevel_wrapper #(
                             latched_input <= io_input_payload;
                             last_reg <= io_input_last;
                             sbox_idx <= '0;
+                            internal_round_idx <= '0;
                         end
                     end
                     
@@ -133,6 +142,25 @@ module PoseidonTopLevel_wrapper #(
                             sbox_outputs[sbox_idx] <= sbox_out_payload;
                             if (sbox_idx < 4'd8) begin
                                 sbox_idx <= sbox_idx + 1'b1;
+                            end
+                        end
+                    end
+
+                    BYPASS_SBOX: begin
+                        // Grava direto do ModAdder e pula a S-Box
+                        sbox_outputs[sbox_idx] <= seq_adder_out;
+                        if (sbox_idx < 4'd8) begin
+                            sbox_idx <= sbox_idx + 1'b1;
+                        end
+                    end
+                    
+                    WAIT_MATRIX: begin
+                        if (matrix_done) begin
+                            latched_input <= matrix_state_out; 
+                            
+                            if (internal_round_idx < 7'd64) begin
+                                internal_round_idx <= internal_round_idx + 1'b1;
+                                sbox_idx <= '0;
                             end
                         end
                     end
@@ -177,9 +205,20 @@ module PoseidonTopLevel_wrapper #(
                     if (sbox_out_valid) begin
                         if (sbox_idx == 4'd8) begin
                             next_state = START_MATRIX;
+                        end else if (is_partial_round) begin
+                            // Se for Partial Round, depois do elemento 0, pula direto para o Bypass
+                            next_state = BYPASS_SBOX;
                         end else begin
                             next_state = FEED_SBOX;
                         end
+                    end
+                end
+
+                BYPASS_SBOX: begin
+                    if (sbox_idx == 4'd8) begin
+                        next_state = START_MATRIX;
+                    end else begin
+                        next_state = BYPASS_SBOX;
                     end
                 end
                 
@@ -192,10 +231,20 @@ module PoseidonTopLevel_wrapper #(
                 
                 WAIT_MATRIX: begin
                     if (matrix_done) begin
-                        io_output_valid_logic = 1'b1;
-                        if (io_output_ready) begin
-                            next_state = IDLE;
+                        if (internal_round_idx == 7'd64) begin
+                            // Terminou todas as rodadas!
+                            next_state = DONE_STATE;
+                        end else begin
+                            // Loop back para a próxima rodada
+                            next_state = FEED_SBOX;
                         end
+                    end
+                end
+
+                DONE_STATE: begin
+                    io_output_valid_logic = 1'b1;
+                    if (io_output_ready) begin
+                        next_state = IDLE;
                     end
                 end
                 
@@ -205,7 +254,9 @@ module PoseidonTopLevel_wrapper #(
 
         assign io_input_ready = io_input_ready_logic;
         assign io_output_valid = io_output_valid_logic;
-        assign io_output_payload = matrix_state_out;
+        
+        // A saída final fica estável no latched_input
+        assign io_output_payload = latched_input; 
         assign io_output_last = last_reg;
 
     end else begin: PARALLEL_IMPLEMENTATION
@@ -219,7 +270,6 @@ module PoseidonTopLevel_wrapper #(
         logic [0:8] io_output_ready_sboxes;
         logic [0:8][254:0] io_output_payload_sboxes;
         
-        // Sinais combinacionais do ModAdder
         logic [0:8][9:0]   par_const_idx;
         logic [0:8][254:0] par_adder_out;
         
@@ -232,23 +282,19 @@ module PoseidonTopLevel_wrapper #(
         assign io_input_ready = &io_input_ready_sboxes;
 
         for (genvar i = 0; i < 9; i++) begin : gen_sboxes
-            
-            // 1. Calcula o índice para esta S-Box específica
             assign par_const_idx[i] = (round_idx * 9) + i;
             
-            // 2. Instancia o somador modular para esta via do pipeline
             ModAdder #() add_round_const_par (
                 .op1_i(io_input_payload_sboxes[i]),
                 .op2_i(ROUND_CONSTANTS[par_const_idx[i]]),
                 .res_o(par_adder_out[i])
             );
 
-            // 3. Conecta a saída do somador na entrada da S-Box
             sbox sbox_inst (
                 .io_input_valid(io_input_valid_sboxes[i]),
                 .io_input_ready(io_input_ready_sboxes[i]),
                 .io_input_last(io_input_last_sboxes[i]),
-                .io_input_payload(par_adder_out[i]), // <- ModAdder injetado aqui
+                .io_input_payload(par_adder_out[i]),
                 
                 .io_output_valid(io_output_valid_sboxes[i]),
                 .io_output_ready(io_output_ready_sboxes[i]),

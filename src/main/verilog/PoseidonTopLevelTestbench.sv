@@ -12,10 +12,13 @@ module PoseidonTester ();
     localparam CaseNum     = 3;
 
     // init test cases
-    logic [9*255-1:0] random_inputs[2:0];
-    logic [255-1  :0] ref_outputs[2:0];
+    logic [9*255-1:0] random_inputs[0:2];
+    logic [255-1  :0] ref_outputs[0:2];
+    
     initial begin
-        //case 0
+        // ==========================================
+        // CASE 0 
+        // ==========================================
         random_inputs[0][255*1-1:255*0] = 255'h2c31b76f79ec43792abeb60fc312d5907d8e1e65ccd7348344abb1594953e0fc;
         random_inputs[0][255*2-1:255*1] = 255'h5699fc150f68c6353b5b557f576df53d6ace988e132fe8a3b34c9d25410aace2;
         random_inputs[0][255*3-1:255*2] = 255'h2f4cf8a3c7f85b0a120fa9906e34e309b3b3b48824c32a468d70f835d0abb121;
@@ -25,9 +28,13 @@ module PoseidonTester ();
         random_inputs[0][255*7-1:255*6] = 255'hefc77ca3994848c930847c18201a94436d5cc71844058f6a46e4af18a8f1c6e;
         random_inputs[0][255*8-1:255*7] = 255'h4650402fa402b6bce4833ecb497890a3fa88bfe17d1f581cd09e6d72db8a73df;
         random_inputs[0][255*9-1:255*8] = 255'h2ac931db5390a68274ec06f7f3b3b8c433cd692afce80da1a27d1ce1f0efb051;
-        ref_outputs[0] = 255'h71c3c87b2a0358e422218dccbed6eff1fb0e4d0370134ff689a0b95c17fa4fb8;
         
-        // case 1
+        // Gabarito VALIDADO das 65 rodadas - CASE 0
+        ref_outputs[0] = 255'h3a4caefe0d67e6dd0be592ca0d7c274cde7ae7a5d3b0f321a7ae3ae46a64b8c3;
+        
+        // ==========================================
+        // CASE 1
+        // ==========================================
         random_inputs[1][255*1-1:255*0] = 255'h62c838a9461d60da5d1b2c09b69ac5719d43ecb5eaa20ffcb67845f7b5298ac1;
         random_inputs[1][255*2-1:255*1] = 255'h56471b1cd018cb2a8ce500f5bb039ffb5ab416e4c1c92597d4c938be7528d329;
         random_inputs[1][255*3-1:255*2] = 255'h2fe3762c60793137af233cc8acc80f12e494e3577674c757140dbdfd8e34d286;
@@ -37,9 +44,13 @@ module PoseidonTester ();
         random_inputs[1][255*7-1:255*6] = 255'h3759563725df7bef5b924fe22c379cf15cc82927a5211061eb17c1b90ef794d2;
         random_inputs[1][255*8-1:255*7] = 255'h3dac033097dbea6d64dacc3fa7b5c0430a497d7bc1c8f566e093a81f14dc2457;
         random_inputs[1][255*9-1:255*8] = 255'h3ae6041f1d29bd3b6943669bcb20712b578d021b7f89b937d778b5897c247ad2;
-        ref_outputs[1] = 255'h19ae8bfc87cbef97838643d1b12af08105bbd319f28cb8c6f91e5c9f061ba0b;
+        
+        // Gabarito VALIDADO das 65 rodadas - CASE 1
+        ref_outputs[1] = 255'h43801e84e8ef41312fe68dae3816751488ce7fe7d12132d3545f86efa38d5f76;
 
-        //case 2
+        // ==========================================
+        // CASE 2
+        // ==========================================
         random_inputs[2][255*1-1:255*0] = 255'h5d5cf53d7e90f1a5354834bc58cc3fac955f37a554af302a7282e3a693db6031;
         random_inputs[2][255*2-1:255*1] = 255'h6dcecc3b28d5007a4f6de64e7a19aff221078acd8fe61bcb3f2ca38bb57251d4;
         random_inputs[2][255*3-1:255*2] = 255'he7b94f14160e75cb28ad4d9ea99578b33b4f9ac3989dd1df1eb60ea6c00059d;
@@ -49,23 +60,22 @@ module PoseidonTester ();
         random_inputs[2][255*7-1:255*6] = 255'h17dda1af1c465252939389b40cf7e44060508b76adc903c21bfafc3b3125b5db;
         random_inputs[2][255*8-1:255*7] = 255'h6d485981cf3ba66c51495d546f298b2afa4d214315119e5c655260821aa8e468;
         random_inputs[2][255*9-1:255*8] = 255'h549b07ae6c99841e1fab7dfe0ba2f4b20f7054f1681806285ddae892a1728491;
-        ref_outputs[2] = 255'hccd0692f9e592e5bdb1e47dd83d84e058d7694e50aac5c05992453474916df3;
+        
+        // Gabarito VALIDADO das 65 rodadas - CASE 2
+        ref_outputs[2] = 255'h628c54b6ffad60ea4952f071223b7cd450a6268c964b2993e1bd26c092ecce2b;
     end
 
     // generate clk and reset signal
     logic [49:0] cycle_counter;
     logic clk, reset;
     
-    // NOVO: Sinal para controlar a rodada
     logic [6:0] round_idx;
-
-    initial begin cycle_counter = 0; end
-    
     initial begin
-        round_idx = 7'd0; // Forçando a rodada 0 para o teste inicial
+        round_idx = 7'd0; 
     end
 
     initial begin cycle_counter = 0; end
+    
     always @(posedge clk) begin
         if(reset) begin
             cycle_counter <= 0;
@@ -74,6 +84,7 @@ module PoseidonTester ();
             cycle_counter <= cycle_counter + 1;
         end
     end
+    
     initial begin
         clk = 0;
         forever #(ClockPeriod/2) clk = ~clk;
@@ -85,11 +96,11 @@ module PoseidonTester ();
     end
 
     // drive input ports
-    // Modificado para o array de 9 blocos
     logic [0:8][254:0] io_input_payload;
     logic io_input_valid;
     logic io_input_ready, io_input_last;
-    logic input_handshake = io_input_valid & io_input_ready;
+    logic input_handshake;
+    assign input_handshake = io_input_valid & io_input_ready;
     logic [1:0] input_counter;
 
     always @(posedge clk) begin
@@ -106,16 +117,15 @@ module PoseidonTester ();
             end
 
             if(input_handshake) begin
-                $display("input %d sent in parallel successfully", input_counter);
+                $display("input %d sent successfully", input_counter);
                 input_counter <= input_counter + 1;
             end
         end
     end
     
-    // Como os 9 dados vão de uma vez, é sempre o 'last' da transação
     assign io_input_last = 1'b1;
 
-    // Conecta o array de inputs de forma limpa usando um loop generate combinacional
+    // Conecta o array de inputs de forma limpa
     genvar i;
     generate
         for(i = 0; i < 9; i++) begin : gen_inputs
@@ -125,13 +135,14 @@ module PoseidonTester ();
 
     // check output
     logic io_output_last, io_output_valid, io_output_ready;
-    logic output_handshake = io_output_valid & io_output_ready;
+    logic output_handshake;
+    assign output_handshake = io_output_valid & io_output_ready;
     
-    // Modificado para receber os 9 blocos resultantes
     logic [0:8][254:0] io_output_payload;
     logic [1:0] output_counter;
 
     assign io_output_ready = 1'b1;
+    
     always@(posedge clk) begin
         if(reset) begin
             output_counter <= 0;
@@ -139,9 +150,8 @@ module PoseidonTester ();
         else begin
             if(output_handshake) begin
                 if( io_output_payload[0] != ref_outputs[output_counter]) begin
-                    $display("error output %d: obtido %h", output_counter, io_output_payload[0]);
+                    $display("error output %d: obtido %h, esperado %h", output_counter, io_output_payload[0], ref_outputs[output_counter]);
                     $display(" test fail !!!");
-                    $display("cycles: %d", cycle_counter);
                     $finish();
                 end else begin
                     $display("res %d: %h correct", output_counter, io_output_payload[0]);
@@ -151,7 +161,8 @@ module PoseidonTester ();
 
             if(output_counter == 3) begin
                 $display("test success !!!");
-                $display("cycles: %d", cycle_counter);
+                $display("Total latency for 3 hashes (Cycles): %d", cycle_counter);
+                $display("Average latency per hash (Cycles): %d", cycle_counter / 3);
                 $finish();
             end
         end
@@ -163,7 +174,7 @@ module PoseidonTester ();
         .io_input_last     (io_input_last    ),
         .io_input_payload  (io_input_payload ), 
         
-        .round_idx         (round_idx        ), // <-- A PORTA CONECTADA AQUI
+        .round_idx         (round_idx        ), 
         
         .io_output_valid   (io_output_valid  ),
         .io_output_ready   (io_output_ready  ),

@@ -658,6 +658,13 @@ def poseidon_hash_full(state_in: list[int], round_constants: list[int]) -> list[
 
 if __name__ == "__main__":
     
+    # Valida se importou 585 constantes
+    print(f"Total de constantes extraídas: {len(ROUND_CONSTANTS)}")
+    assert len(ROUND_CONSTANTS) == 585, "Faltam constantes no SV_CONSTANTS_TEXT!"
+
+    # ==========================================
+    # INPUTS
+    # ==========================================
     state_in_0 = [
         0x2c31b76f79ec43792abeb60fc312d5907d8e1e65ccd7348344abb1594953e0fc,
         0x5699fc150f68c6353b5b557f576df53d6ace988e132fe8a3b34c9d25410aace2,
@@ -669,15 +676,43 @@ if __name__ == "__main__":
         0x4650402fa402b6bce4833ecb497890a3fa88bfe17d1f581cd09e6d72db8a73df,
         0x2ac931db5390a68274ec06f7f3b3b8c433cd692afce80da1a27d1ce1f0efb051
     ]
-    
-    # 1. Valida se importou 585 constantes
-    print(f"Total de constantes extraídas: {len(ROUND_CONSTANTS)}")
-    assert len(ROUND_CONSTANTS) == 585, "Faltam constantes no SV_CONSTANTS_TEXT!"
 
-    # 2. Roda os 65 rounds com a nova lógica completa
-    final_state_0 = poseidon_hash_full(state_in_0, ROUND_CONSTANTS)
-    
-    # 3. Imprime o gabarito no exato formato esperado no testbench
-    print("\n=== HASH FINAL APÓS 65 RODADAS (Case 0) ===")
-    for idx, val in enumerate(final_state_0):
-        print(f"ref_outputs[{idx}] = 255'h{val:064x};")
+    state_in_1 = [
+        0x62c838a9461d60da5d1b2c09b69ac5719d43ecb5eaa20ffcb67845f7b5298ac1,
+        0x56471b1cd018cb2a8ce500f5bb039ffb5ab416e4c1c92597d4c938be7528d329,
+        0x2fe3762c60793137af233cc8acc80f12e494e3577674c757140dbdfd8e34d286,
+        0x27f5e266a33ce1ce7b7e3c0ff9dc208daa761fde79ef13043d13880df26a91e4,
+        0x219715469ff34195e2cd87ac4acb8267c32ffde877906b5c8aa2c1100d97e57b,
+        0x1807394708c4cd299a0175d5b243a11eee3793d945825c045e2dd22b49dc7100,
+        0x3759563725df7bef5b924fe22c379cf15cc82927a5211061eb17c1b90ef794d2,
+        0x3dac033097dbea6d64dacc3fa7b5c0430a497d7bc1c8f566e093a81f14dc2457,
+        0x3ae6041f1d29bd3b6943669bcb20712b578d021b7f89b937d778b5897c247ad2
+    ]
+
+    state_in_2 = [
+        0x5d5cf53d7e90f1a5354834bc58cc3fac955f37a554af302a7282e3a693db6031,
+        0x6dcecc3b28d5007a4f6de64e7a19aff221078acd8fe61bcb3f2ca38bb57251d4,
+        0xe7b94f14160e75cb28ad4d9ea99578b33b4f9ac3989dd1df1eb60ea6c00059d,
+        0x3356f26c281ab6e2cc37253f69d48ed55398a2df594bfd4fc8cfd85ff251f2cc,
+        0x2d8ee970888961e79feeb0cd962b76430606072bc082ef14be16713a734aad40,
+        0x70c0d0f0abc5ab734d67f70808d5bcc83080670f2898650846db3edcbcfc8d5e,
+        0x17dda1af1c465252939389b40cf7e44060508b76adc903c21bfafc3b3125b5db,
+        0x6d485981cf3ba66c51495d546f298b2afa4d214315119e5c655260821aa8e468,
+        0x549b07ae6c99841e1fab7dfe0ba2f4b20f7054f1681806285ddae892a1728491
+    ]
+
+    # ==========================================
+    # EXECUÇÃO DOS 65 ROUNDS
+    # ==========================================
+    final_states = [
+        poseidon_hash_full(state_in_0, ROUND_CONSTANTS),
+        poseidon_hash_full(state_in_1, ROUND_CONSTANTS),
+        poseidon_hash_full(state_in_2, ROUND_CONSTANTS)
+    ]
+
+    # ==========================================
+    # SAÍDA FORMATADA PARA O SYSTEMVERILOG
+    # ==========================================
+    for case_num in range(3):
+        print(f"\n        // Gabarito VALIDADO das 65 rodadas - CASE {case_num}")
+        print(f"        ref_outputs[{case_num}] = 255'h{final_states[case_num][0]:064x};")

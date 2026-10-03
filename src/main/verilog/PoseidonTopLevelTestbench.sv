@@ -168,6 +168,23 @@ module PoseidonTester ();
         end
     end
 
+    /*always @(posedge clk) begin
+        if (!reset && cycle_counter % 2000 == 0)
+            $display("[%0d] wrap=%s round=%0d sbox_idx=%0d | sbox_state=%s step=%0d | mix ready=%b done=%b",
+                cycle_counter,
+                poseidonInst.SEQUENTIAL_IMPLEMENTATION.current_state.name(),
+                poseidonInst.SEQUENTIAL_IMPLEMENTATION.internal_round_idx,
+                poseidonInst.SEQUENTIAL_IMPLEMENTATION.sbox_idx,
+                poseidonInst.SEQUENTIAL_IMPLEMENTATION.sbox_inst.SERIAL_IMPLEMENTATION.state.name(),
+                poseidonInst.SEQUENTIAL_IMPLEMENTATION.sbox_inst.SERIAL_IMPLEMENTATION.step,
+                poseidonInst.SEQUENTIAL_IMPLEMENTATION.matrix_ready,
+                poseidonInst.SEQUENTIAL_IMPLEMENTATION.matrix_done);
+        end
+
+    always @(posedge clk) if (cycle_counter > 1000000) begin
+        $display("TIMEOUT"); $finish();
+    end*/
+
     PoseidonTopLevel_wrapper poseidonInst(
         .io_input_valid    (io_input_valid   ),
         .io_input_ready    (io_input_ready   ),

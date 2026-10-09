@@ -1,5 +1,7 @@
 `include "poseidon_constants_t9.sv" 
 
+//Fault detection
+
 module PoseidonTopLevel_wrapper #(
     parameter bit SEQUENTIAL = 1
 )(

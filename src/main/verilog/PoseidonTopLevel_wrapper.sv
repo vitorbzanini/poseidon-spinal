@@ -1,7 +1,3 @@
-`include "poseidon_constants_t9.sv" 
-
-//Fault detection
-
 module PoseidonTopLevel_wrapper #(
     parameter bit SEQUENTIAL = 1
 )(
@@ -11,7 +7,6 @@ module PoseidonTopLevel_wrapper #(
     
     input      [0:8][254:0] io_input_payload, 
     
-    // Mantido para compatibilidade com a versão paralela
     input      [6:0]        round_idx, 
     
     output              io_output_valid,
@@ -24,58 +19,81 @@ module PoseidonTopLevel_wrapper #(
     input               reset
 );
 
+    // IMPORTANTE: Importar o package com as novas constantes de Fault Detection
+    import poseidon_fault_constants_pkg::*;
+
+    // ==========================================
+    // 0. FAULT DETECTION ENCODER (A * R mod P)
+    // ==========================================
+    logic               encoded_valid;
+    logic               encoded_ready;
+    logic [0:8][254:0]  encoded_payload;
+    logic               encoded_last;
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            encoded_last <= 1'b0;
+        end else if (io_input_valid && io_input_ready) begin
+            encoded_last <= io_input_last;
+        end
+    end
+
+    fault_encoder_in encoder_inst (
+        .clk(clk),
+        .reset(reset),
+        
+        .io_input_valid(io_input_valid),
+        .io_input_ready(io_input_ready),
+        .io_input_payload(io_input_payload),
+        
+        .io_output_valid(encoded_valid),
+        .io_output_ready(encoded_ready),
+        .io_output_payload(encoded_payload)
+    );
+
+    // ==========================================
+    // SINAIS INTERMÉDIOS (POSEIDON -> DECODER)
+    // ==========================================
+    logic               poseidon_valid;
+    logic               poseidon_ready;
+    logic [0:8][254:0]  poseidon_payload;
+    logic               poseidon_last;
+
+    // ==========================================
+    // POSEIDON HASH IMPLEMENTATION
+    // ==========================================
     if (SEQUENTIAL) begin: SEQUENTIAL_IMPLEMENTATION 
 
-        // --- FSM States ---
         typedef enum logic [3:0] {
-            IDLE,
-            FEED_SBOX,
-            WAIT_SBOX,
-            BYPASS_SBOX,    // NOVO: Atalho para os Partial Rounds
-            START_MATRIX,
-            WAIT_MATRIX,
-            DONE_STATE      // NOVO: Finalizou as 65 rodadas
+            IDLE, FEED_SBOX, WAIT_SBOX, BYPASS_SBOX, 
+            START_MATRIX, WAIT_MATRIX, DONE_STATE
         } state_e;
         
         state_e current_state, next_state;
 
-        // --- Registers & Buffers ---
-        logic [6:0] internal_round_idx; // Contador interno de rodadas (0 a 64)
-        logic [3:0] sbox_idx; // Counts from 0 to 8
+        logic [6:0] internal_round_idx; 
+        logic [3:0] sbox_idx; 
         logic [0:8][254:0] latched_input;
         logic [0:8][254:0] sbox_outputs;
         logic last_reg;
 
-        // --- Controle de Partial Rounds ---
-        // As rodadas parciais vão do índice 4 ao 60 (total 57 rodadas)
         logic is_partial_round;
         assign is_partial_round = (internal_round_idx >= 7'd4) && (internal_round_idx <= 7'd60);
 
-        // --- Single S-box Signals ---
-        logic sbox_in_valid;
-        logic sbox_in_ready;
+        logic sbox_in_valid, sbox_in_ready;
         logic [254:0] sbox_in_payload;
         
-        logic sbox_out_valid;
-        logic sbox_out_ready;
+        logic sbox_out_valid, sbox_out_ready;
         logic [254:0] sbox_out_payload;
 
-        // --- Matrix Signals ---
-        logic matrix_start;
-        logic matrix_ready;
-        logic matrix_done;
+        logic matrix_start, matrix_ready, matrix_done;
         logic [0:8][254:0] matrix_state_out;
 
-        // ==========================================
-        // 0. AddRoundConstants via ModAdder
-        // ==========================================
         logic [9:0]   seq_const_idx;
-        logic [254:0] seq_selected_constant;
-        logic [254:0] seq_adder_out;
+        logic [254:0] seq_selected_constant, seq_adder_out;
 
-        // Agora usa o internal_round_idx da FSM em vez da porta externa
         assign seq_const_idx = (internal_round_idx * 9) + sbox_idx;
-        assign seq_selected_constant = ROUND_CONSTANTS[seq_const_idx];
+        assign seq_selected_constant = FAULT_ROUND_CONSTANTS[seq_const_idx];
 
         ModAdder #() add_round_const_seq (
             .op1_i(latched_input[sbox_idx]),
@@ -85,39 +103,28 @@ module PoseidonTopLevel_wrapper #(
 
         assign sbox_in_payload = seq_adder_out;
 
-        // ==========================================
-        // 1. Single S-Box Instance
-        // ==========================================
         sbox sbox_inst (
             .io_input_valid(sbox_in_valid),
             .io_input_ready(sbox_in_ready),
             .io_input_last(1'b0), 
             .io_input_payload(sbox_in_payload),
-            
             .io_output_valid(sbox_out_valid),
             .io_output_ready(sbox_out_ready),
             .io_output_payload(sbox_out_payload),
-            
-            .clk(clk),
-            .reset(reset)
+            .clk(clk), .reset(reset)
         );
 
-        // ==========================================
-        // 2. Mix Layer Instance
-        // ==========================================
+        // NOVA LIGAÇÃO: Passar o is_partial_round para a mix_layer
         mix_layer_sequential #(.N(9)) mix_layer_inst (
-            .clk(clk),
-            .reset(reset),
+            .clk(clk), .reset(reset),
             .start(matrix_start),
+            .is_partial_round_i(is_partial_round), // <--- AQUI
             .state_in(sbox_outputs), 
             .ready(matrix_ready),
             .done(matrix_done),
             .state_out(matrix_state_out)
         );
 
-        // ==========================================
-        // 3. FSM Sequential Logic
-        // ==========================================
         always_ff @(posedge clk or posedge reset) begin
             if (reset) begin
                 current_state <= IDLE;
@@ -131,42 +138,32 @@ module PoseidonTopLevel_wrapper #(
 
                 case (current_state)
                     IDLE: begin
-                        if (io_input_valid) begin
-                            latched_input <= io_input_payload;
-                            last_reg <= io_input_last;
+                        if (encoded_valid) begin
+                            latched_input <= encoded_payload;
+                            last_reg <= encoded_last;
                             sbox_idx <= '0;
                             internal_round_idx <= '0;
                         end
                     end
-                    
                     WAIT_SBOX: begin
                         if (sbox_out_valid && sbox_out_ready) begin
                             sbox_outputs[sbox_idx] <= sbox_out_payload;
-                            if (sbox_idx < 4'd8) begin
-                                sbox_idx <= sbox_idx + 1'b1;
-                            end
+                            if (sbox_idx < 4'd8) sbox_idx <= sbox_idx + 1'b1;
                         end
                     end
-
                     BYPASS_SBOX: begin
-                        // Grava direto do ModAdder e pula a S-Box
                         sbox_outputs[sbox_idx] <= seq_adder_out;
-                        if (sbox_idx < 4'd8) begin
-                            sbox_idx <= sbox_idx + 1'b1;
-                        end
+                        if (sbox_idx < 4'd8) sbox_idx <= sbox_idx + 1'b1;
                     end
-                    
                     WAIT_MATRIX: begin
                         if (matrix_done) begin
                             latched_input <= matrix_state_out; 
-                            
                             if (internal_round_idx < 7'd64) begin
                                 internal_round_idx <= internal_round_idx + 1'b1;
                                 sbox_idx <= '0;
                             end
                         end
                     end
-                    
                     default: ; 
                 endcase
             end
@@ -175,14 +172,10 @@ module PoseidonTopLevel_wrapper #(
         logic io_input_ready_logic;
         logic io_output_valid_logic;
 
-        // ==========================================
-        // 4. FSM Combinational Logic
-        // ==========================================
         always_comb begin
             next_state = current_state;
             io_input_ready_logic = 1'b0;
             io_output_valid_logic = 1'b0;
-            
             sbox_in_valid = 1'b0;
             sbox_out_ready = 1'b0;
             matrix_start = 1'b0;
@@ -190,76 +183,47 @@ module PoseidonTopLevel_wrapper #(
             case (current_state)
                 IDLE: begin
                     io_input_ready_logic = 1'b1;
-                    if (io_input_valid) begin
-                        next_state = FEED_SBOX;
-                    end
+                    if (encoded_valid) next_state = FEED_SBOX;
                 end
-                
                 FEED_SBOX: begin
                     sbox_in_valid = 1'b1;
-                    if (sbox_in_ready) begin
-                        next_state = WAIT_SBOX;
-                    end
+                    if (sbox_in_ready) next_state = WAIT_SBOX;
                 end
-                
                 WAIT_SBOX: begin
                     sbox_out_ready = 1'b1;
                     if (sbox_out_valid) begin
-                        if (sbox_idx == 4'd8) begin
-                            next_state = START_MATRIX;
-                        end else if (is_partial_round) begin
-                            // Se for Partial Round, depois do elemento 0, pula direto para o Bypass
-                            next_state = BYPASS_SBOX;
-                        end else begin
-                            next_state = FEED_SBOX;
-                        end
+                        if (sbox_idx == 4'd8) next_state = START_MATRIX;
+                        else if (is_partial_round) next_state = BYPASS_SBOX;
+                        else next_state = FEED_SBOX;
                     end
                 end
-
                 BYPASS_SBOX: begin
-                    if (sbox_idx == 4'd8) begin
-                        next_state = START_MATRIX;
-                    end else begin
-                        next_state = BYPASS_SBOX;
-                    end
+                    if (sbox_idx == 4'd8) next_state = START_MATRIX;
+                    else next_state = BYPASS_SBOX;
                 end
-                
                 START_MATRIX: begin
                     matrix_start = 1'b1;
-                    if (matrix_ready) begin
-                        next_state = WAIT_MATRIX;
-                    end
+                    if (matrix_ready) next_state = WAIT_MATRIX;
                 end
-                
                 WAIT_MATRIX: begin
                     if (matrix_done) begin
-                        if (internal_round_idx == 7'd64) begin
-                            // Terminou todas as rodadas!
-                            next_state = DONE_STATE;
-                        end else begin
-                            // Loop back para a próxima rodada
-                            next_state = FEED_SBOX;
-                        end
+                        if (internal_round_idx == 7'd64) next_state = DONE_STATE;
+                        else next_state = FEED_SBOX;
                     end
                 end
-
                 DONE_STATE: begin
                     io_output_valid_logic = 1'b1;
-                    if (io_output_ready) begin
-                        next_state = IDLE;
-                    end
+                    if (poseidon_ready) next_state = IDLE;
                 end
-                
                 default: next_state = IDLE;
             endcase
         end
 
-        assign io_input_ready = io_input_ready_logic;
-        assign io_output_valid = io_output_valid_logic;
+        assign encoded_ready = io_input_ready_logic;
         
-        // A saída final fica estável no latched_input
-        assign io_output_payload = latched_input; 
-        assign io_output_last = last_reg;
+        assign poseidon_valid = io_output_valid_logic;
+        assign poseidon_payload = latched_input; 
+        assign poseidon_last = last_reg;
 
     end else begin: PARALLEL_IMPLEMENTATION
 
@@ -274,21 +238,25 @@ module PoseidonTopLevel_wrapper #(
         
         logic [0:8][9:0]   par_const_idx;
         logic [0:8][254:0] par_adder_out;
+
+        // NOVO: Definir is_partial_round para a versão paralela
+        logic is_partial_round;
+        assign is_partial_round = (round_idx >= 7'd4) && (round_idx <= 7'd60);
         
         for (genvar j = 0; j < 9; j++) begin : gen_inputs
-            assign io_input_valid_sboxes[j]   = io_input_valid;
-            assign io_input_last_sboxes[j]    = io_input_last;
-            assign io_input_payload_sboxes[j] = io_input_payload[j];
+            assign io_input_valid_sboxes[j]   = encoded_valid;
+            assign io_input_last_sboxes[j]    = encoded_last;
+            assign io_input_payload_sboxes[j] = encoded_payload[j];
         end
 
-        assign io_input_ready = &io_input_ready_sboxes;
+        assign encoded_ready = &io_input_ready_sboxes;
 
         for (genvar i = 0; i < 9; i++) begin : gen_sboxes
             assign par_const_idx[i] = (round_idx * 9) + i;
             
             ModAdder #() add_round_const_par (
                 .op1_i(io_input_payload_sboxes[i]),
-                .op2_i(ROUND_CONSTANTS[par_const_idx[i]]),
+                .op2_i(FAULT_ROUND_CONSTANTS[par_const_idx[i]]),
                 .res_o(par_adder_out[i])
             );
 
@@ -297,19 +265,14 @@ module PoseidonTopLevel_wrapper #(
                 .io_input_ready(io_input_ready_sboxes[i]),
                 .io_input_last(io_input_last_sboxes[i]),
                 .io_input_payload(par_adder_out[i]),
-                
                 .io_output_valid(io_output_valid_sboxes[i]),
                 .io_output_ready(io_output_ready_sboxes[i]),
                 .io_output_payload(io_output_payload_sboxes[i]),
-                
-                .clk(clk),
-                .reset(reset)
+                .clk(clk), .reset(reset)
             );
         end
         
-        logic matrix_start;
-        logic matrix_ready;
-        logic matrix_done;
+        logic matrix_start, matrix_ready, matrix_done;
         logic [0:8][254:0] matrix_state_out;
 
         wire all_sboxes_valid = &io_output_valid_sboxes;
@@ -322,34 +285,58 @@ module PoseidonTopLevel_wrapper #(
         logic [0:8][254:0] latched_sbox_payload;
 
         always_ff @(posedge clk or posedge reset) begin
-            if (reset) begin
-                latched_sbox_payload <= '0;
-            end else if (matrix_start) begin
-                latched_sbox_payload <= io_output_payload_sboxes;
-            end
+            if (reset) latched_sbox_payload <= '0;
+            else if (matrix_start) latched_sbox_payload <= io_output_payload_sboxes;
         end
 
+        // NOVA LIGAÇÃO: Passar o is_partial_round para a mix_layer (versão paralela)
         mix_layer_sequential #(.N(9)) mix_layer_inst (
-            .clk(clk),
-            .reset(reset),
+            .clk(clk), .reset(reset),
             .start(matrix_start),
+            .is_partial_round_i(is_partial_round), // <--- AQUI
             .state_in(latched_sbox_payload), 
             .ready(matrix_ready),
             .done(matrix_done),
             .state_out(matrix_state_out)
         );
 
-        assign io_output_valid   = matrix_done;
-        assign io_output_payload = matrix_state_out;
+        assign poseidon_valid   = matrix_done;
+        assign poseidon_payload = matrix_state_out;
 
         reg last_reg;
-        assign io_output_last = last_reg;
+        assign poseidon_last = last_reg;
         always_ff @(posedge clk) begin
-            if (io_input_valid && io_input_ready) begin
-                last_reg <= io_input_last;
-            end
+            if (encoded_valid && encoded_ready) last_reg <= encoded_last;
         end
 
     end
-    
+
+    // ==========================================
+    // FINAL. FAULT DETECTION DECODER (A^-1 * R mod P)
+    // ==========================================
+    logic decoded_last;
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            decoded_last <= 1'b0;
+        end else if (poseidon_valid && poseidon_ready) begin
+            decoded_last <= poseidon_last;
+        end
+    end
+
+    fault_decoder_out decoder_inst (
+        .clk(clk),
+        .reset(reset),
+        
+        .io_input_valid(poseidon_valid),
+        .io_input_ready(poseidon_ready),
+        .io_input_payload(poseidon_payload),
+        
+        .io_output_valid(io_output_valid),
+        .io_output_ready(io_output_ready),
+        .io_output_payload(io_output_payload)
+    );
+
+    assign io_output_last = decoded_last;
+
 endmodule

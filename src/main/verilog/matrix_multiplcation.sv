@@ -10,7 +10,15 @@ module mix_layer_sequential #(
     input  logic [0:N-1][254:0] state_in,
     output logic ready,
     output logic done,
-    output logic [0:N-1][254:0] state_out
+    output logic [0:N-1][254:0] state_out,
+
+    // Porta do multiplicador COMPARTILHADO (o modmul fica no top level)
+    output logic         mul_valid_o,
+    input  logic         mul_ready_i,
+    output logic [254:0] mul_op1_o,
+    output logic [254:0] mul_op2_o,
+    input  logic         mul_res_valid_i,
+    input  logic [254:0] mul_res_i
 );
 
     // IMPORTAR O PACKAGE COM AS CONSTANTES DE FAULT DETECTION
@@ -20,12 +28,12 @@ module mix_layer_sequential #(
     logic         mul_valid, mul_ready, mul_res_valid;
     logic [254:0] mul_op1, mul_op2, mul_res;
 
-    modmul #() matrix_multiplier (
-        .clk(clk), .rst(reset),
-        .op_valid_i(mul_valid), .op_ready_o(mul_ready),
-        .op1_i(mul_op1), .op2_i(mul_op2),
-        .res_valid_o(mul_res_valid), .res_ready_i(1'b1), .res_o(mul_res)
-    );
+    assign mul_valid_o   = mul_valid;
+    assign mul_op1_o     = mul_op1;
+    assign mul_op2_o     = mul_op2;
+    assign mul_ready     = mul_ready_i;
+    assign mul_res_valid = mul_res_valid_i;
+    assign mul_res       = mul_res_i;
 
     // ---------------- soma modular ----------------
     logic [254:0] acc_reg, mod_add_res;

@@ -1,21 +1,38 @@
 `timescale 1ns/1ps
 
+// Fault detection - DECODER: x_i = A_i^-1 * y_i mod P
+//
+// Opera EM LUGAR sobre o registrador de estado do Poseidon (sem buffers proprios)
+// e usa o multiplicador modular COMPARTILHADO do top level.
+//   - start_i : pulso de 1 ciclo para iniciar
+//   - done_o  : 1 ciclo quando os 9 elementos foram processados
+//   - rd_*    : leitura do elemento idx do estado (combinacional)
+//   - wr_*    : escrita do resultado no elemento idx do estado
 module fault_decoder_out (
-    input  logic               clk,
-    input  logic               reset,
+    input  logic         clk,
+    input  logic         reset,
 
-    input  logic               io_input_valid,
-    output logic               io_input_ready,
-    input  logic [0:8][254:0]  io_input_payload,
+    input  logic         start_i,
+    output logic         done_o,
 
-    output logic               io_output_valid,
-    input  logic               io_output_ready,
-    output logic [0:8][254:0]  io_output_payload
+    // Acesso ao registrador de estado do Poseidon
+    output logic [3:0]   rd_idx_o,
+    input  logic [254:0] rd_data_i,
+    output logic         wr_en_o,
+    output logic [3:0]   wr_idx_o,
+    output logic [254:0] wr_data_o,
+
+    // Porta do multiplicador compartilhado
+    output logic         mul_valid_o,
+    input  logic         mul_ready_i,
+    output logic [254:0] mul_op1_o,
+    output logic [254:0] mul_op2_o,
+    input  logic         mul_res_valid_i,
+    input  logic [254:0] mul_res_i
 );
 
-    // Inversos de A em forma de Montgomery: (A^-1 * R) mod P
-    // modmul(y, A^-1 * R) = y * A^-1 * R * R^-1 = y * A^-1 mod P
-    localparam logic [254:0] INV_A_SCALARS [0:8] = '{
+    // A_i^-1 * R mod P (forma de Montgomery). modmul(y, A^-1*R) = y * A^-1 mod P (forma normal)
+    localparam logic [254:0] INV_A_MONT [0:8] = '{
         255'h2eb0c8399ccb80e7eeecb7fd521f62a8e4161ea9aaab36ab0000000055555555,
         255'h04d4237855c1011651e8dcc995bf433111b424cb999a419a0000000066666666,
         255'h66d0f1e660ec4796f8b356e005810db9e6b5824adb6cc6dadb6db6dadb6db6dc,
@@ -27,74 +44,57 @@ module fault_decoder_out (
         255'h70c369e0a0e579263f94f6a61a4a7b0d9a86b65af72aaac14f72c23411a7b962
     };
 
-    typedef enum logic [1:0] { IDLE, MULTIPLY, DONE } state_t;
+    typedef enum logic [1:0] { IDLE, MULTIPLY, FINISH } state_t;
     state_t state;
 
-    logic [3:0] idx; 
-    logic [0:8][254:0] latched_in;
-    logic [0:8][254:0] latched_out;
+    logic [3:0] idx;
+    logic       mul_valid;
 
-    logic         mul_valid, mul_ready, mul_res_valid;
-    logic [254:0] mul_op1, mul_op2, mul_res;
+    assign rd_idx_o    = idx;
+    assign mul_valid_o = mul_valid;
+    assign mul_op1_o   = rd_data_i;
+    assign mul_op2_o   = INV_A_MONT[idx];
 
-    modmul #() decoder_mult (
-        .clk(clk), .rst(reset),
-        .op_valid_i(mul_valid), .op_ready_o(mul_ready),
-        .op1_i(mul_op1), .op2_i(mul_op2),
-        .res_valid_o(mul_res_valid), .res_ready_i(1'b1), .res_o(mul_res)
-    );
+    assign wr_en_o     = (state == MULTIPLY) && mul_res_valid_i;
+    assign wr_idx_o    = idx;
+    assign wr_data_o   = mul_res_i;
 
-    // Entrada em Montgomery (X * R) multiplicada pelo inverso puro (INV_A)
-    // O modmul aplica R^-1, resultando em X * INV_A na forma normal.
-    assign mul_op1 = latched_in[idx];
-    assign mul_op2 = INV_A_SCALARS[idx];
+    assign done_o      = (state == FINISH);
 
     always_ff @(posedge clk or posedge reset) begin
         if (reset) begin
-            state       <= IDLE;
-            idx         <= '0;
-            latched_in  <= '0;
-            latched_out <= '0;
-            mul_valid   <= 1'b0;
+            state     <= IDLE;
+            idx       <= '0;
+            mul_valid <= 1'b0;
         end else begin
             case (state)
                 IDLE: begin
                     idx <= '0;
-                    if (io_input_valid) begin
-                        latched_in <= io_input_payload;
-                        state      <= MULTIPLY;
-                        mul_valid  <= 1'b1; 
+                    if (start_i) begin
+                        state     <= MULTIPLY;
+                        mul_valid <= 1'b1;
                     end
                 end
 
                 MULTIPLY: begin
-                    if (mul_ready && mul_valid) begin
-                        mul_valid <= 1'b0; 
-                    end
+                    if (mul_ready_i && mul_valid)
+                        mul_valid <= 1'b0;
 
-                    if (mul_res_valid) begin
-                        latched_out[idx] <= mul_res;
-                        
+                    if (mul_res_valid_i) begin
                         if (idx == 4'd8) begin
-                            state <= DONE; 
+                            state <= FINISH;
                         end else begin
                             idx       <= idx + 1'b1;
-                            mul_valid <= 1'b1; 
+                            mul_valid <= 1'b1;
                         end
                     end
                 end
 
-                DONE: begin
-                    if (io_output_ready) begin
-                        state <= IDLE;
-                    end
-                end
+                FINISH: state <= IDLE;
+
+                default: state <= IDLE;
             endcase
         end
     end
-
-    assign io_input_ready    = (state == IDLE);
-    assign io_output_valid   = (state == DONE);
-    assign io_output_payload = latched_out;
 
 endmodule

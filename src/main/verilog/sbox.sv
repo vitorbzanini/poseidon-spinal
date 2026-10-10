@@ -11,10 +11,23 @@ module sbox #(
     input               io_output_ready,
     output     [254:0]  io_output_payload,
     input               clk,
-    input               reset
+    input               reset,
+
+    // Porta do multiplicador COMPARTILHADO (usada pela versao SERIAL)
+    output              mul_valid_o,
+    input               mul_ready_i,
+    output     [254:0]  mul_op1_o,
+    output     [254:0]  mul_op2_o,
+    input               mul_res_valid_i,
+    input      [254:0]  mul_res_i
 );
 
 if (PARALLEL) begin: PARALLEL_IMPLEMENTATION
+
+    // A versao paralela tem os seus proprios modmul; a porta compartilhada fica sem uso
+    assign mul_valid_o = 1'b0;
+    assign mul_op1_o   = '0;
+    assign mul_op2_o   = '0;
 
     localparam [254:0] R2_MOD_N = 255'h0748d9d99f59ff1105d314967254398f2b6cedcb87925c23c999e990f3f29c6d;
 
@@ -187,15 +200,13 @@ end else begin: SERIAL_IMPLEMENTATION
     logic [2:0]   step;
     logic [254:0] x_reg, xbar_reg, x2_reg, x2bar_reg, x4_reg, res_reg;
 
-    logic         mul_valid, mul_ready, mul_res_valid;
-    logic [254:0] mul_op1, mul_op2, mul_res;
+    logic         mul_valid;
+    logic [254:0] mul_op1, mul_op2;
 
-    modmul mod_multiplier (
-        .clk(clk), .rst(reset),
-        .op_valid_i(mul_valid), .op_ready_o(mul_ready),
-        .op1_i(mul_op1), .op2_i(mul_op2),
-        .res_valid_o(mul_res_valid), .res_ready_i(1'b1), .res_o(mul_res)
-    );
+    // Multiplicador compartilhado: o modmul fica no top level
+    assign mul_valid_o = mul_valid;
+    assign mul_op1_o   = mul_op1;
+    assign mul_op2_o   = mul_op2;
 
     // FSM
     always_ff @(posedge clk or posedge reset) begin
@@ -207,8 +218,8 @@ end else begin: SERIAL_IMPLEMENTATION
         state_n = state;
         case (state)
             S_IDLE:  if (io_input_valid)                     state_n = S_ISSUE;
-            S_ISSUE: if (mul_ready)                          state_n = S_WAIT;   // aceita no mesmo ciclo
-            S_WAIT:  if (mul_res_valid)
+            S_ISSUE: if (mul_ready_i)                          state_n = S_WAIT;   // aceita no mesmo ciclo
+            S_WAIT:  if (mul_res_valid_i)
                          state_n = (step == 3'd4) ? S_DONE : S_ISSUE;
             S_DONE:  if (io_output_ready)                    state_n = S_IDLE;
             default: state_n = S_IDLE;
@@ -231,13 +242,13 @@ end else begin: SERIAL_IMPLEMENTATION
                 x_reg <= io_input_payload;
                 step  <= 3'd0;
             end
-            if (state == S_WAIT && mul_res_valid) begin
+            if (state == S_WAIT && mul_res_valid_i) begin
                 case (step)
-                    3'd0: xbar_reg  <= mul_res;
-                    3'd1: x2_reg    <= mul_res;
-                    3'd2: x2bar_reg <= mul_res;
-                    3'd3: x4_reg    <= mul_res;
-                    3'd4: res_reg   <= mul_res;
+                    3'd0: xbar_reg  <= mul_res_i;
+                    3'd1: x2_reg    <= mul_res_i;
+                    3'd2: x2bar_reg <= mul_res_i;
+                    3'd3: x4_reg    <= mul_res_i;
+                    3'd4: res_reg   <= mul_res_i;
                     default: ;
                 endcase
                 step <= step + 3'd1;

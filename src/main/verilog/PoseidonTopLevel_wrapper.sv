@@ -10,6 +10,11 @@
 //    tempo (as fases sao separadas pela FSM).
 //  * Existe UM registrador de estado (latched_input). O encoder e o decoder
 //    operam em lugar sobre ele; a saida e lida dele. Nao ha buffers extras.
+//  * PERMUTACAO: o estado e guardado em outra ordem (posicao k guarda o elemento
+//    original SIGMA[k]). A entrada e permutada ao carregar e a saida e
+//    des-permutada (so fiacao). As tabelas (ARC, matrizes, A, A^-1) ja vem
+//    reordenadas pelos scripts. Nas partial rounds o S-box age na posicao
+//    SBOX_POS_PARTIAL, onde mora o elemento original 0.
 //
 // Configuracao do multiplicador (VERSION / PIPELINE): dentro do modmul.sv
 // =============================================================================
@@ -35,6 +40,8 @@ module PoseidonTopLevel_wrapper #(
 );
 
     import poseidon_fault_constants_pkg::*;
+    import poseidon_pi_pkg::SIGMA;
+    import poseidon_pi_pkg::SBOX_POS_PARTIAL;
 
     if (!SEQUENTIAL) begin: UNSUPPORTED
         $error("PoseidonTopLevel_wrapper: a versao paralela nao foi adaptada ao multiplicador compartilhado");
@@ -214,6 +221,29 @@ module PoseidonTopLevel_wrapper #(
         .mul_res_valid_i(mx_res_valid), .mul_res_i(shared_res)
     );
 
+    // ---------------- Quem passa pelo S-box ----------------
+    // Full round: todas as posicoes. Partial round: so a posicao SBOX_POS
+    // (onde mora o elemento original 0); as outras fazem bypass.
+    localparam logic [3:0] SBOX_POS = 4'(SBOX_POS_PARTIAL);
+
+    logic [3:0] sbox_idx_nxt;
+    assign sbox_idx_nxt = sbox_idx + 1'b1;
+
+    // O proximo elemento (idx+1) da MESMA rodada passa pelo S-box?
+    logic nxt_elem_uses_sbox;
+    assign nxt_elem_uses_sbox = !is_partial_round || (sbox_idx_nxt == SBOX_POS);
+
+    // O elemento 0 da PROXIMA rodada passa pelo S-box? (usado em WAIT_MATRIX,
+    // quando internal_round_idx ainda e o da rodada que esta terminando)
+    logic next_round_partial, first_elem_uses_sbox;
+    assign next_round_partial   = (internal_round_idx >= 7'd3) && (internal_round_idx <= 7'd59);
+    assign first_elem_uses_sbox = !next_round_partial || (SBOX_POS == 4'd0);
+
+    logic [0:8][254:0] permuted_input;
+    for (genvar k = 0; k < 9; k++) begin : INPUT_PERMUTE
+        assign permuted_input[k] = io_input_payload[SIGMA[k]];
+    end
+
     // ---------------- Registradores ----------------
     always_ff @(posedge clk or posedge reset) begin
         if (reset) begin
@@ -229,7 +259,9 @@ module PoseidonTopLevel_wrapper #(
             case (current_state)
                 IDLE: begin
                     if (io_input_valid) begin
-                        latched_input      <= io_input_payload;
+                        
+                        latched_input <= permuted_input;
+
                         last_reg           <= io_input_last;
                         sbox_idx           <= '0;
                         internal_round_idx <= '0;
@@ -288,13 +320,12 @@ module PoseidonTopLevel_wrapper #(
                 sbox_out_ready = 1'b1;
                 if (sbox_out_valid) begin
                     if (sbox_idx == 4'd8) next_state = START_MATRIX;
-                    else if (is_partial_round) next_state = BYPASS_SBOX;
-                    else next_state = FEED_SBOX;
+                    else next_state = nxt_elem_uses_sbox ? FEED_SBOX : BYPASS_SBOX;
                 end
             end
             BYPASS_SBOX: begin
                 if (sbox_idx == 4'd8) next_state = START_MATRIX;
-                else next_state = BYPASS_SBOX;
+                else next_state = nxt_elem_uses_sbox ? FEED_SBOX : BYPASS_SBOX;
             end
             START_MATRIX: begin
                 matrix_start = 1'b1;
@@ -303,7 +334,7 @@ module PoseidonTopLevel_wrapper #(
             WAIT_MATRIX: begin
                 if (matrix_done) begin
                     if (internal_round_idx == 7'd64) next_state = DECODE_START;
-                    else next_state = FEED_SBOX;
+                    else next_state = first_elem_uses_sbox ? FEED_SBOX : BYPASS_SBOX;
                 end
             end
             DECODE_START: next_state = DECODE_WAIT;
@@ -320,7 +351,28 @@ module PoseidonTopLevel_wrapper #(
     // ---------------- Interface ----------------
     assign io_input_ready    = (current_state == IDLE);
     assign io_output_valid   = (current_state == OUTPUT_STATE);
-    assign io_output_payload = latched_input;
+    // Desfaz a permutacao: posicao k do estado guarda o elemento original SIGMA[k]
+    for (genvar k = 0; k < 9; k++) begin : OUTPUT_UNPERMUTE
+        assign io_output_payload[SIGMA[k]] = latched_input[k];
+    end
     assign io_output_last    = last_reg;
+
+    /*always @(posedge clk) begin
+        if (current_state != next_state)
+            $display("[DBG %0t] %s -> %s | io_input_valid=%b", $time,
+                    current_state.name(), next_state.name(), io_input_valid);
+    end
+
+    always @(posedge clk) begin
+        if (current_state == ENCODE_START)
+            for (int k = 0; k < 9; k++)
+                $display("[DBG] latched_input[%0d] = %h  (SIGMA[%0d]=%0d)", k, latched_input[k][31:0], k, SIGMA[k]);
+    end*/
+
+    always @(posedge clk) begin
+    if (current_state == IDLE && io_input_valid)
+        for (int k = 0; k < 9; k++)
+            $display("[IN] payload[%0d] = %h", k, io_input_payload[k][31:0]);
+    end
 
 endmodule

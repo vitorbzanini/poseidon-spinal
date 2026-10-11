@@ -33,15 +33,15 @@ module fault_encoder_in (
 
     // A_i * R mod P (forma de Montgomery). modmul(x, A*R) = x * A mod P (forma normal)
     localparam logic [254:0] A_MONT [0:8] = '{
-        255'h486e140d064f104ecca4efcfc634efe0098e27ee0009d80600000005fffffffa,
-        255'h04c9cf6d363b9de5cc83b7a7960bb7c566d9f3df00120c0b0000000afffffff5,
-        255'h351332208fc5a8c4ff9c57876f8457b017e363d300189c0f0000000efffffff1,
-        255'h21b85034193c413b3293bf3f18d3bf8026389fb80027601800000017ffffffe8,
-        255'h5201b2e772c64c1a65ac5f1ef24c5f6ad7420fac002df01c0000001bffffffe4,
         255'h3ea6d0fafc3ce49098a3c6d69b9bc73ae5974b91003cb42500000024ffffffdb,
         255'h6ef033ae55c6ef6fcbbc66b67514672596a0bb850043442900000028ffffffd7,
         255'h5b9551c1df3d87e5feb3ce6e1e63cef5a4f5f76a0052083200000031ffffffce,
-        255'h04962b3598a0adf33189fdfd9789feab1096ff40006900400000003fffffffc0
+        255'h5201b2e772c64c1a65ac5f1ef24c5f6ad7420fac002df01c0000001bffffffe4,
+        255'h21b85034193c413b3293bf3f18d3bf8026389fb80027601800000017ffffffe8,
+        255'h486e140d064f104ecca4efcfc634efe0098e27ee0009d80600000005fffffffa,
+        255'h04962b3598a0adf33189fdfd9789feab1096ff40006900400000003fffffffc0,
+        255'h04c9cf6d363b9de5cc83b7a7960bb7c566d9f3df00120c0b0000000afffffff5,
+        255'h351332208fc5a8c4ff9c57876f8457b017e363d300189c0f0000000efffffff1
     };
 
     typedef enum logic [1:0] { IDLE, MULTIPLY, FINISH } state_t;

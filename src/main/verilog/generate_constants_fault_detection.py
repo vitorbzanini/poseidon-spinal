@@ -3,9 +3,15 @@ import os
 P = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
 N = 9
 
-# Vetor A de escalares aleatórios (Primos)
+# Vetores e Permutação
 A = [3, 5, 7, 11, 13, 17, 19, 23, 29]
+SIGMA = [5, 6, 7, 4, 3, 0, 8, 1, 2]
+R = (1 << 256) % P
 
+def mod_inverse(value, mod):
+    return pow(value, -1, mod)
+
+# Colar aqui a tua MDS_MATRIX original
 MDS_MATRIX = [
     [0x19c308bd25b13848eef068e557794c72f62a247271c6bf1c38e38e38aaaaaaab, 0x22c74bcc2615a595a8f7c0cf3616f401991f4acdb332b532e66666661999999a, 0x6963af62e003892a5d1d50074e93217934daf23145cff68aba2e8ba200000001, 0x6a44840c3b7b082cd99fb0b208d45b5a376dd6581553d4546aaaaaa9c0000001, 0x6217dc5a0f85429f8dce7bb808267bb5bd02ed3d9d88753a3b13b13a3b13b13c, 0x4a867dda0877876545809d29bd0c9d27fef9e96fa4913b23edb6db6d12492493, 0x3dd414f92742ed7bd70dc88cd1efeaad81febddf77769776eeeeeeee66666667, 0x6caeccddf703a573b0063a878907ba84fe81c9c2cffe763f0fffffff10000001, 0x1b46fa31af7059b6a2a432d4b6f8e788c868db4bffff9d2cf0f0f0f0b4b4b4b5],
     [0x22c74bcc2615a595a8f7c0cf3616f401991f4acdb332b532e66666661999999a, 0x6963af62e003892a5d1d50074e93217934daf23145cff68aba2e8ba200000001, 0x6a44840c3b7b082cd99fb0b208d45b5a376dd6581553d4546aaaaaa9c0000001, 0x6217dc5a0f85429f8dce7bb808267bb5bd02ed3d9d88753a3b13b13a3b13b13c, 0x4a867dda0877876545809d29bd0c9d27fef9e96fa4913b23edb6db6d12492493, 0x3dd414f92742ed7bd70dc88cd1efeaad81febddf77769776eeeeeeee66666667, 0x6caeccddf703a573b0063a878907ba84fe81c9c2cffe763f0fffffff10000001, 0x1b46fa31af7059b6a2a432d4b6f8e788c868db4bffff9d2cf0f0f0f0b4b4b4b5, 0x46d8580827a75ac891152076b08d923c24f3e43ab8e28d8d9c71c71bd5555556],
@@ -613,66 +619,81 @@ ARC_OLD = [
     if "255'h" in line
 ]
 
-# Funcao de inversão modular
-def mod_inverse(value, mod):
-    return pow(value, -1, mod)
-
-# 1. ATUALIZAR A MATRIZ MDS
-M_new = [[0]*N for _ in range(N)]
-for i in range(N):
-    for j in range(N):
-        a_j_5 = pow(A[j], 5, P)
-        inv_a_j_5 = mod_inverse(a_j_5, P)
-        novo_valor = (MDS_MATRIX[i][j] * A[i] * inv_a_j_5) % P
-        M_new[i][j] = novo_valor
-
-# 2. ATUALIZAR AS 585 CONSTANTES DE ROUND
+# 1. GERAR OS NOVOS ARC (Com a tua lógica perfeita)
 ARC_new = []
-for idx, arc in enumerate(ARC_OLD):
-    # Identifica em qual elemento da s-box a constante vai cair (0 a 8)
-    i = idx % N  
-    novo_arc = (arc * A[i]) % P
+for idx in range(len(ARC_OLD)):
+    r, k = divmod(idx, N)
+    j = SIGMA[k] 
+    novo_arc = (ARC_OLD[r * N + j] * A[j]) % P
     ARC_new.append(novo_arc)
 
-# 3. ESCREVER TUDO NUM ARQUIVO .SV JÁ NO FORMATO PACKAGE
+# 2. GERAR AS MATRIZES FULL E PARTIAL
+M_fault_full = [[0]*N for _ in range(N)]
+M_fault_partial = [[0]*N for _ in range(N)]
+
+for i in range(N):
+    for j in range(N):
+        inv_a_j_5 = mod_inverse(pow(A[j], 5, P), P)
+        inv_a_j_1 = mod_inverse(A[j], P)
+        
+        M_fault_full[i][j] = (MDS_MATRIX[i][j] * A[i] * inv_a_j_5) % P
+        
+        if j == 0:
+            M_fault_partial[i][j] = (MDS_MATRIX[i][j] * A[i] * inv_a_j_5) % P
+        else:
+            M_fault_partial[i][j] = (MDS_MATRIX[i][j] * A[i] * inv_a_j_1) % P
+
+# 3. APLICAR A PERMUTAÇÃO (PI) E O FATOR MONTGOMERY (R) ÀS MATRIZES
+M_full_perm = [[0]*N for _ in range(N)]
+M_partial_perm = [[0]*N for _ in range(N)]
+
+for i in range(N):
+    for j in range(N):
+        orig_i = SIGMA[i]
+        orig_j = SIGMA[j]
+        
+        M_full_perm[i][j] = (M_fault_full[orig_i][orig_j] * R) % P
+        M_partial_perm[i][j] = (M_fault_partial[orig_i][orig_j] * R) % P
+
+
+# 4. EXPORTAR TUDO PARA O FICHEIRO SYSTEMVERILOG
 filename = "poseidon_fault_constants_pkg.sv"
 with open(filename, "w") as f:
     f.write("`timescale 1ns/1ps\n\n")
     f.write("package poseidon_fault_constants_pkg;\n\n")
 
-    # =================================================
-    # Escrever as Constantes ARC (Array 1D)
-    # =================================================
+    # A. ARCs
     f.write("    // =================================================\n")
     f.write("    // 1. ARRAY 1D: NEW ARC CONSTANTS FOR FAULT DETECTION\n")
     f.write("    // =================================================\n")
     f.write(f"    localparam logic [254:0] FAULT_ROUND_CONSTANTS [0:{len(ARC_new)-1}] = '{{\n")
-    
     for idx, arc in enumerate(ARC_new):
         comma = "," if idx < len(ARC_new) - 1 else ""
         f.write(f"        255'h{arc:064x}{comma}\n")
-    
     f.write("    };\n\n")
 
-    # =================================================
-    # Escrever a Matriz MDS (Array 2D)
-    # =================================================
+    # B. MATRIZ FULL
     f.write("    // =================================================\n")
-    f.write("    // 2. ARRAY 2D: NEW MDS MATRIX FOR FAULT DETECTION\n")
+    f.write("    // 2A. ARRAY 2D: FAULT_MDS_MATRIX_FULL (MONTGOMERY)\n")
     f.write("    // =================================================\n")
-    f.write(f"    localparam logic [254:0] FAULT_MDS_MATRIX [0:{N-1}][0:{N-1}] = '{{\n")
-    
-    for i, row in enumerate(M_new):
+    f.write(f"    localparam logic [254:0] FAULT_MDS_MATRIX_FULL [0:{N-1}][0:{N-1}] = '{{\n")
+    for i, row in enumerate(M_full_perm):
         formatted_row = ", ".join([f"255'h{val:064x}" for val in row])
-        comma = "," if i < len(M_new) - 1 else ""
-        f.write(f"        // ROW {i}\n")
-        # Em Python f-strings, {{ e }} são usados para imprimir as chaves literais { e }
+        comma = "," if i < N - 1 else ""
         f.write(f"        '{{ {formatted_row} }}{comma}\n")
-        if i < len(M_new) - 1:
-            f.write("\n")
-            
     f.write("    };\n\n")
+
+    # C. MATRIZ PARTIAL
+    f.write("    // =================================================\n")
+    f.write("    // 2B. ARRAY 2D: FAULT_MDS_MATRIX_PARTIAL (MONTGOMERY)\n")
+    f.write("    // =================================================\n")
+    f.write(f"    localparam logic [254:0] FAULT_MDS_MATRIX_PARTIAL [0:{N-1}][0:{N-1}] = '{{\n")
+    for i, row in enumerate(M_partial_perm):
+        formatted_row = ", ".join([f"255'h{val:064x}" for val in row])
+        comma = "," if i < N - 1 else ""
+        f.write(f"        '{{ {formatted_row} }}{comma}\n")
+    f.write("    };\n\n")
+
     f.write("endpackage\n")
 
-print(f"Sucesso! Gerados {len(ARC_new)} ARCs e matriz {N}x{N} no ficheiro '{filename}'.")
-print(f"Os escalares usados foram: A = {A}")
+print(f"Sucesso! Gerados {len(ARC_new)} ARCs e Matrizes no ficheiro '{filename}'.")

@@ -29,23 +29,21 @@ module PoseidonTopLevel_wrapper #(
             IDLE,
             FEED_SBOX,
             WAIT_SBOX,
-            BYPASS_SBOX,    // NOVO: Atalho para os Partial Rounds
+            BYPASS_SBOX,
             START_MATRIX,
             WAIT_MATRIX,
-            DONE_STATE      // NOVO: Finalizou as 65 rodadas
+            DONE_STATE
         } state_e;
         
         state_e current_state, next_state;
 
         // --- Registers & Buffers ---
-        logic [6:0] internal_round_idx; // Contador interno de rodadas (0 a 64)
-        logic [3:0] sbox_idx; // Counts from 0 to 8
+        logic [6:0] internal_round_idx;
+        logic [3:0] sbox_idx;
         logic [0:8][254:0] latched_input;
         logic [0:8][254:0] sbox_outputs;
         logic last_reg;
 
-        // --- Controle de Partial Rounds ---
-        // As rodadas parciais vão do índice 4 ao 60 (total 57 rodadas)
         logic is_partial_round;
         assign is_partial_round = (internal_round_idx >= 7'd4) && (internal_round_idx <= 7'd60);
 
@@ -65,13 +63,39 @@ module PoseidonTopLevel_wrapper #(
         logic [0:8][254:0] matrix_state_out;
 
         // ==========================================
+        // UNICO MODMUL COMPARTILHADO (sbox <-> matriz)
+        // ==========================================
+        // sel_matrix: dono do modmul. A sbox e a matriz nunca rodam ao mesmo tempo
+        // (FSM sequencial), entao basta selecionar pelo estado. A matriz assume o
+        // modmul de START_MATRIX ate WAIT_MATRIX terminar (todos os 81 resultados
+        // ja coletados quando matrix_done sobe).
+        logic         sel_matrix;
+        assign sel_matrix = (current_state == START_MATRIX) || (current_state == WAIT_MATRIX);
+
+        logic         mul_valid, mul_ready, mul_res_valid;
+        logic [254:0] mul_op1, mul_op2, mul_res;
+
+        logic         sb_mul_valid, mx_mul_valid;
+        logic [254:0] sb_mul_op1, sb_mul_op2, mx_mul_op1, mx_mul_op2;
+
+        assign mul_valid = sel_matrix ? mx_mul_valid : sb_mul_valid;
+        assign mul_op1   = sel_matrix ? mx_mul_op1   : sb_mul_op1;
+        assign mul_op2   = sel_matrix ? mx_mul_op2   : sb_mul_op2;
+
+        modmul #() shared_multiplier (
+            .clk(clk), .rst(reset),
+            .op_valid_i(mul_valid), .op_ready_o(mul_ready),
+            .op1_i(mul_op1), .op2_i(mul_op2),
+            .res_valid_o(mul_res_valid), .res_ready_i(1'b1), .res_o(mul_res)
+        );
+
+        // ==========================================
         // 0. AddRoundConstants via ModAdder
         // ==========================================
         logic [9:0]   seq_const_idx;
         logic [254:0] seq_selected_constant;
         logic [254:0] seq_adder_out;
 
-        // Agora usa o internal_round_idx da FSM em vez da porta externa
         assign seq_const_idx = (internal_round_idx * 9) + sbox_idx;
         assign seq_selected_constant = ROUND_CONSTANTS[seq_const_idx];
 
@@ -84,7 +108,7 @@ module PoseidonTopLevel_wrapper #(
         assign sbox_in_payload = seq_adder_out;
 
         // ==========================================
-        // 1. Single S-Box Instance
+        // 1. Single S-Box Instance (sem modmul proprio)
         // ==========================================
         sbox sbox_inst (
             .io_input_valid(sbox_in_valid),
@@ -95,13 +119,20 @@ module PoseidonTopLevel_wrapper #(
             .io_output_valid(sbox_out_valid),
             .io_output_ready(sbox_out_ready),
             .io_output_payload(sbox_out_payload),
+
+            .mul_valid_o(sb_mul_valid),
+            .mul_ready_i(~sel_matrix & mul_ready),
+            .mul_op1_o(sb_mul_op1),
+            .mul_op2_o(sb_mul_op2),
+            .mul_res_valid_i(~sel_matrix & mul_res_valid),
+            .mul_res_i(mul_res),
             
             .clk(clk),
             .reset(reset)
         );
 
         // ==========================================
-        // 2. Mix Layer Instance
+        // 2. Mix Layer Instance (sem modmul proprio)
         // ==========================================
         mix_layer_sequential #(.N(9)) mix_layer_inst (
             .clk(clk),
@@ -110,7 +141,14 @@ module PoseidonTopLevel_wrapper #(
             .state_in(sbox_outputs), 
             .ready(matrix_ready),
             .done(matrix_done),
-            .state_out(matrix_state_out)
+            .state_out(matrix_state_out),
+
+            .mul_valid_o(mx_mul_valid),
+            .mul_ready_i(sel_matrix & mul_ready),
+            .mul_op1_o(mx_mul_op1),
+            .mul_op2_o(mx_mul_op2),
+            .mul_res_valid_i(sel_matrix & mul_res_valid),
+            .mul_res_i(mul_res)
         );
 
         // ==========================================
@@ -147,7 +185,6 @@ module PoseidonTopLevel_wrapper #(
                     end
 
                     BYPASS_SBOX: begin
-                        // Grava direto do ModAdder e pula a S-Box
                         sbox_outputs[sbox_idx] <= seq_adder_out;
                         if (sbox_idx < 4'd8) begin
                             sbox_idx <= sbox_idx + 1'b1;
@@ -206,7 +243,6 @@ module PoseidonTopLevel_wrapper #(
                         if (sbox_idx == 4'd8) begin
                             next_state = START_MATRIX;
                         end else if (is_partial_round) begin
-                            // Se for Partial Round, depois do elemento 0, pula direto para o Bypass
                             next_state = BYPASS_SBOX;
                         end else begin
                             next_state = FEED_SBOX;
@@ -232,10 +268,8 @@ module PoseidonTopLevel_wrapper #(
                 WAIT_MATRIX: begin
                     if (matrix_done) begin
                         if (internal_round_idx == 7'd64) begin
-                            // Terminou todas as rodadas!
                             next_state = DONE_STATE;
                         end else begin
-                            // Loop back para a próxima rodada
                             next_state = FEED_SBOX;
                         end
                     end
@@ -255,7 +289,6 @@ module PoseidonTopLevel_wrapper #(
         assign io_input_ready = io_input_ready_logic;
         assign io_output_valid = io_output_valid_logic;
         
-        // A saída final fica estável no latched_input
         assign io_output_payload = latched_input; 
         assign io_output_last = last_reg;
 

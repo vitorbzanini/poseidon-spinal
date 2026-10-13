@@ -40,6 +40,15 @@ if (PIPELINE == 0) begin : gen_fsm
     logic [511:0] t;
     logic [255:0] m;
 
+    logic [WIDTH-1:0] op1_q, op2_q;
+    always_ff @(posedge clk, posedge rst) begin
+        if (rst) begin
+            op1_q <= '0; op2_q <= '0;
+        end else if (current_state == IDLE && op_valid_i) begin
+            op1_q <= op1_i; op2_q <= op2_i;
+        end
+    end
+
     always_ff @(posedge clk, posedge rst) begin
         if (rst) current_state <= IDLE;
         else     current_state <= next_state;
@@ -62,7 +71,7 @@ if (PIPELINE == 0) begin : gen_fsm
             if (rst) begin
                 t <= '0; m <= '0;
             end else begin
-                if      (current_state == MULTIPLICATION_INPUTS) t <= (op1_i * op2_i);
+                if      (current_state == MULTIPLICATION_INPUTS) t <= (op1_q * op2_q);
                 else if (current_state == INVERSE_NEGATIVE_MODULUS_AND_MULT_INPUTS_TRANFORMED) m <= (t[255:0] * N_LINE);
                 else if (current_state == MULT_BY_MODULUS_SUM_PREVIOUS_INPUTS_MULTIPLIED) t <= (t + (m * MODULUS)) >> 256;
             end
@@ -76,7 +85,7 @@ if (PIPELINE == 0) begin : gen_fsm
         always_comb begin
             operand1 = '0; operand2 = '0;
             case (current_state)
-                MULTIPLICATION_INPUTS: begin operand1 = 256'(op1_i); operand2 = 256'(op2_i); end
+                MULTIPLICATION_INPUTS: begin operand1 = 256'(op1_q); operand2 = 256'(op2_q); end
                 INVERSE_NEGATIVE_MODULUS_AND_MULT_INPUTS_TRANFORMED: begin operand1 = t[255:0]; operand2 = N_LINE; end
                 MULT_BY_MODULUS_SUM_PREVIOUS_INPUTS_MULTIPLIED: begin operand1 = m; operand2 = 256'(MODULUS); end
                 default: ;

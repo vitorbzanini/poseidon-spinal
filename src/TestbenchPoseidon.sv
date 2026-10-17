@@ -14,7 +14,7 @@
 //  suporte, ex.: Questa/ModelSim, VCS, Xcelium, Vivado xsim). Verilator nao.
 //  Nao ha vetor de referencia (golden): o teste compara os dois designs entre si.
 // =============================================================================
-module TestbenchPoseidon;
+module tb_PoseidonSequentialShared;
 
     // Corpo escalar de 255 bits (o mesmo do R2_MOD_N usado no sbox)
     localparam logic [254:0] FIELD_N =
@@ -44,7 +44,7 @@ module TestbenchPoseidon;
     wire               fault_sticky_o;
 
     // ---------------- DUT ----------------
-    TopLevelPoseidon dut (
+    PoseidonSequentialShared_top #(.ERROR_ON_FAULT(1'b0)) dut (
         .io_input_valid   (io_input_valid),
         .io_input_ready   (io_input_ready),
         .io_input_last    (io_input_last),
@@ -103,8 +103,15 @@ module TestbenchPoseidon;
     int inject_elem  = 0;
     int inject_bit   = 0;
 
-    // Dispara no inicio da rodada inject_round (sbox_idx == 0) do design com
-    // fault detection: inverte 1 bit de latched_input[inject_elem].
+    // No design sequencial os dois passos usam o MESMO latched_input / round idx,
+    // entao a falha precisa dizer em qual passo cai:
+    //   inject_pass = 0 -> passo padrao   (dut.fault_mode == 0)
+    //   inject_pass = 1 -> passo codificado (dut.fault_mode == 1)
+    // Em ambos os casos o comparador final deve acusar divergencia.
+    bit inject_pass = 1'b1;
+
+    // Dispara no inicio da rodada inject_round (sbox_idx == 0) do passo escolhido:
+    // inverte 1 bit de latched_input[inject_elem].
     initial begin
         // xsim nao aceita force em bit/part-select nem com indice nao constante
         // em variavel: forca-se o vetor INTEIRO, ja com o bit invertido.
@@ -112,14 +119,15 @@ module TestbenchPoseidon;
         forever begin
             @(negedge clk);
             if (inject_en &&
-                int'(dut.u_fault.internal_round_idx) == inject_round &&
-                dut.u_fault.sbox_idx == 4'd0) begin
-                flipped_state = dut.u_fault.latched_input;
+                (dut.fault_mode === inject_pass) &&
+                int'(dut.internal_round_idx) == inject_round &&
+                dut.sbox_idx == 4'd0) begin
+                flipped_state = dut.latched_input;
                 flipped_state[inject_elem] = flipped_state[inject_elem] ^ (255'd1 << inject_bit);
-                force dut.u_fault.latched_input = flipped_state;
+                force dut.latched_input = flipped_state;
                 @(posedge clk);
                 #1;
-                release dut.u_fault.latched_input;
+                release dut.latched_input;
                 inject_en = 1'b0;
                 $display("[%0t] falha injetada: round=%0d elem=%0d bit=%0d",
                          $time, inject_round, inject_elem, inject_bit);
@@ -198,8 +206,8 @@ module TestbenchPoseidon;
 
     // ---------------- Sequencia principal ----------------
     initial begin
-        $dumpfile("TestbenchPoseidon_top.vcd");
-        $dumpvars(0, TestbenchPoseidon);
+        $dumpfile("tb_PoseidonSequentialShared.vcd");
+        $dumpvars(0, tb_PoseidonSequentialShared);
 
         // reset
         repeat (5) @(negedge clk);
@@ -216,9 +224,16 @@ module TestbenchPoseidon;
         check(fault_sticky_o === 1'b0, "fault_sticky_o subiu nos casos limpos");
 
         // -------- Parte 2: injecao de falha --------
-        // partial round
+        // partial round (passo codificado)
+        inject_pass = 1'b1;
         inject_en = 1'b1; inject_round = 10; inject_elem = 0; inject_bit = 0;
         run_case("fault_partial_r10_e0_b0", rand_vec(), 1'b1);
+
+        // partial round (passo padrao)
+        inject_pass = 1'b0;
+        inject_en = 1'b1; inject_round = 10; inject_elem = 0; inject_bit = 0;
+        run_case("fault_std_partial_r10_e0_b0", rand_vec(), 1'b1);
+        inject_pass = 1'b1;
 
         // full round inicial
         inject_en = 1'b1; inject_round = 2; inject_elem = 3; inject_bit = 100;

@@ -1,7 +1,7 @@
 // mix_layer_sequential - igual ao mix_layer_sequential, mas SEM modmul interno.
 // O modmul e externo (compartilhado com a sbox no top level).
 // Matriz MDS Hankel: M[i][j] = v[i+j], valores ja em forma de Montgomery (v*R mod N).
-module mix_layer_sequential_master #(
+module mix_layer_standard#(
     parameter int unsigned N = 9
 )(
     input  logic clk,
@@ -43,7 +43,7 @@ module mix_layer_sequential_master #(
 
     // ---------------- soma modular ----------------
     logic [254:0] acc_reg, mod_add_res;
-    ModAdder_master #() adder (.op1_i(acc_reg), .op2_i(mul_res_i), .res_o(mod_add_res));
+    ModAdder #() adder (.op1_i(acc_reg), .op2_i(mul_res_i), .res_o(mod_add_res));
 
     // ---------------- FSM ----------------
     typedef enum logic [1:0] { IDLE, RUN, FINISH } state_t;

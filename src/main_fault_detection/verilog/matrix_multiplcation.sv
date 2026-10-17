@@ -1,6 +1,6 @@
 // mix_layer_sequential - versao em fluxo (pipelined)
 // Atualizado para Fault Detection: Seleciona dinamicamente entre matrizes Full e Partial
-module mix_layer_sequential #(
+module mix_layer_fault #(
     parameter int unsigned N = 9
 )(
     input  logic clk,

@@ -1,0 +1,1 @@
+s1(10Sep2026:11:00:39):  xrun modmul.sv modmul_tb.sv -top modmul_tb -timescale 1ns/1ps -access +rwc -gui 

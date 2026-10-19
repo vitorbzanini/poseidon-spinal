@@ -50,6 +50,20 @@ bin/
 **/xcelium.d/
 **/waves.shm/
 
+obj_dir/
+**/obj_dir/
+*.vcd
+*.fst
+*.fst.hier
+*.vlt.bak
+V*.mk
+V*_classes.*
+V*__*.cpp
+V*__*.h
+V*__*.d
+*.dat
+*.log
+
 simWorkspace/
 tmp/
 null

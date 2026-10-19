@@ -25,6 +25,10 @@
 // o passo 2) e res_reg (resultado do passo 1, para comparar).
 //
 // Interface identica ao TopLevelPoseidon (comparador paralelo).
+//
+// [TIMING] A round constant agora vem de um registrador (rc_q), pre-buscado no
+// mesmo clock em que a FSM avanca. Isso tira do caminho critico a multiplicacao
+// round*9+sbox_idx e o mux 585:1 da tabela. Nao adiciona ciclos de latencia.
 // =============================================================================
 module PoseidonSequentialShared_top #(
     parameter bit ERROR_ON_FAULT = 1   // 0 = so sinaliza fault_detected_o, sem $error
@@ -114,8 +118,10 @@ module PoseidonSequentialShared_top #(
     assign mxf_res_valid = shared_res_valid && (owner == OWN_MIX_FLT);
 
     // synthesis translate_off
+    // Ignora o reset: com estado inicial randomizado (Verilator --rand) o
+    // mul_req pode ser lixo antes do primeiro posedge de reset.
     always @(posedge clk) begin
-        if ($countones(mul_req) > 1)
+        if (!reset && $countones(mul_req) > 1)
             $error("[%0t] mais de um cliente requisitou o multiplicador: %b", $time, mul_req);
     end
     // synthesis translate_on
@@ -188,12 +194,43 @@ module PoseidonSequentialShared_top #(
     logic sbox_out_valid, sbox_out_ready;
     logic [254:0] sbox_out_payload;
 
-    logic [9:0]   seq_const_idx;
     logic [254:0] seq_selected_constant, seq_adder_out;
 
-    assign seq_const_idx = (internal_round_idx * 9) + sbox_idx;
-    assign seq_selected_constant = fault_mode ? FAULT_ROUND_CONSTANTS[seq_const_idx]
-                                              : ROUND_CONSTANTS[seq_const_idx];
+    // ---- Round constant pre-buscada (rc_q) ----
+    // O indice original era round*9 + sbox_idx. Ele sempre avanca de 1 em 1:
+    //   * a cada elemento (WAIT_SBOX / BYPASS_SBOX, com sbox_idx < 8)
+    //   * na troca de rodada (sbox_idx esta saturado em 8 -> proximo e (round+1)*9)
+    // Entao basta um contador rc_next_idx e um registrador rc_q com a constante
+    // da posicao atual. As condicoes de avanco sao as mesmas que movem sbox_idx
+    // e internal_round_idx, logo rc_q == tabela[round*9 + sbox_idx] sempre.
+    localparam int NCONST = 65*9;
+
+    logic [254:0] rc_q;
+    logic [9:0]   rc_next_idx;
+    logic         rc_advance;
+
+    assign rc_advance =
+        (current_state == WAIT_SBOX   && sbox_out_valid && sbox_idx < 4'd8) ||
+        (current_state == BYPASS_SBOX                   && sbox_idx < 4'd8) ||
+        (current_state == WAIT_MATRIX && matrix_done    && internal_round_idx < 7'd64);
+
+    always_ff @(posedge clk) begin
+        if (current_state == IDLE) begin
+            // passo padrao comeca na constante 0 da tabela padrao
+            rc_q        <= ROUND_CONSTANTS[0];
+            rc_next_idx <= 10'd1;
+        end else if (current_state == LOAD_FAULT) begin
+            // passo codificado comeca na constante 0 da tabela de fault
+            rc_q        <= FAULT_ROUND_CONSTANTS[0];
+            rc_next_idx <= 10'd1;
+        end else if (rc_advance) begin
+            rc_q <= fault_mode ? FAULT_ROUND_CONSTANTS[rc_next_idx]
+                               : ROUND_CONSTANTS[rc_next_idx];
+            if (rc_next_idx != 10'(NCONST-1)) rc_next_idx <= rc_next_idx + 1'b1;
+        end
+    end
+
+    assign seq_selected_constant = rc_q;
 
     ModAdder #() add_round_const_seq (
         .op1_i(latched_input[sbox_idx]),

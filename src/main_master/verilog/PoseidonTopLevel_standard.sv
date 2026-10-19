@@ -27,6 +27,7 @@ module PoseidonTopLevel_standard #(
         // --- FSM States ---
         typedef enum logic [3:0] {
             IDLE,
+            ADD_RC,         // AddRoundConstants em pipeline (4 ciclos)
             FEED_SBOX,
             WAIT_SBOX,
             BYPASS_SBOX,
@@ -46,6 +47,10 @@ module PoseidonTopLevel_standard #(
 
         logic is_partial_round;
         assign is_partial_round = (internal_round_idx >= 7'd4) && (internal_round_idx <= 7'd60);
+
+        // Em partial round so a posicao 0 passa pelo S-box; as outras fazem bypass
+        logic elem_uses_sbox;
+        assign elem_uses_sbox = !is_partial_round || (sbox_idx == 4'd0);
 
         // --- Single S-box Signals ---
         logic sbox_in_valid;
@@ -82,35 +87,60 @@ module PoseidonTopLevel_standard #(
         assign mul_op1   = sel_matrix ? mx_mul_op1   : sb_mul_op1;
         assign mul_op2   = sel_matrix ? mx_mul_op2   : sb_mul_op2;
 
-        modmul_master #() shared_multiplier (
+        modmul #() shared_multiplier (
             .clk(clk), .rst(reset),
             .op_valid_i(mul_valid), .op_ready_o(mul_ready),
             .op1_i(mul_op1), .op2_i(mul_op2),
             .res_valid_o(mul_res_valid), .res_ready_i(1'b1), .res_o(mul_res)
         );
 
+        // Registro na saida do modmul (corte de timing, +1 ciclo por multiplicacao)
+        logic         mul_res_valid_q;
+        logic [254:0] mul_res_q;
+        always_ff @(posedge clk or posedge reset) begin
+            if (reset) mul_res_valid_q <= 1'b0;
+            else       mul_res_valid_q <= mul_res_valid;
+        end
+        always_ff @(posedge clk) mul_res_q <= mul_res;
+
         // ==========================================
-        // 0. AddRoundConstants via ModAdder
+        // 0. AddRoundConstants em PIPELINE (4 ciclos, estado ADD_RC)
+        //    ciclo 1: rc_idx_q (= round*9+idx) e rc_x_q (mux 9:1 do estado)
+        //    ciclo 2: rc_c_q   (ROM de constantes)
+        //    ciclo 3-4: ModAdder_pipe (2 estagios)  -> seq_adder_out
+        //    Os registradores seguem as entradas continuamente; o FSM so espera 4
+        //    ciclos em ADD_RC antes de usar seq_adder_out.
         // ==========================================
         logic [9:0]   seq_const_idx;
         logic [254:0] seq_selected_constant;
         logic [254:0] seq_adder_out;
+        logic [254:0] rc_x_q;
+        logic [1:0]   rc_cnt;
 
-        assign seq_const_idx = (internal_round_idx * 9) + sbox_idx;
-        assign seq_selected_constant = ROUND_CONSTANTS[seq_const_idx];
+        always_ff @(posedge clk) begin
+            seq_const_idx         <= (internal_round_idx * 9) + sbox_idx;
+            rc_x_q                <= latched_input[sbox_idx];
+            seq_selected_constant <= ROUND_CONSTANTS[seq_const_idx];
+        end
 
-        ModAdder_master #() add_round_const_seq (
-            .op1_i(latched_input[sbox_idx]),
+        ModAdder_pipe #() add_round_const_seq (
+            .clk(clk),
+            .op1_i(rc_x_q),
             .op2_i(seq_selected_constant),
             .res_o(seq_adder_out)
         );
 
+        always_ff @(posedge clk or posedge reset) begin
+            if (reset)                         rc_cnt <= 2'd0;
+            else if (current_state == ADD_RC)  rc_cnt <= rc_cnt + 2'd1;
+            else                               rc_cnt <= 2'd0;
+        end
         assign sbox_in_payload = seq_adder_out;
 
         // ==========================================
         // 1. Single S-Box Instance (sem modmul proprio)
         // ==========================================
-        sbox_master sbox_inst (
+        sbox sbox_inst (
             .io_input_valid(sbox_in_valid),
             .io_input_ready(sbox_in_ready),
             .io_input_last(1'b0), 
@@ -124,8 +154,8 @@ module PoseidonTopLevel_standard #(
             .mul_ready_i(~sel_matrix & mul_ready),
             .mul_op1_o(sb_mul_op1),
             .mul_op2_o(sb_mul_op2),
-            .mul_res_valid_i(~sel_matrix & mul_res_valid),
-            .mul_res_i(mul_res),
+            .mul_res_valid_i(~sel_matrix & mul_res_valid_q),
+            .mul_res_i(mul_res_q),
             
             .clk(clk),
             .reset(reset)
@@ -134,7 +164,7 @@ module PoseidonTopLevel_standard #(
         // ==========================================
         // 2. Mix Layer Instance (sem modmul proprio)
         // ==========================================
-        mix_layer_sequential_master #(.N(9)) mix_layer_inst (
+        mix_layer_standard #(.N(9)) mix_layer_inst (
             .clk(clk),
             .reset(reset),
             .start(matrix_start),
@@ -147,8 +177,8 @@ module PoseidonTopLevel_standard #(
             .mul_ready_i(sel_matrix & mul_ready),
             .mul_op1_o(mx_mul_op1),
             .mul_op2_o(mx_mul_op2),
-            .mul_res_valid_i(sel_matrix & mul_res_valid),
-            .mul_res_i(mul_res)
+            .mul_res_valid_i(sel_matrix & mul_res_valid_q),
+            .mul_res_i(mul_res_q)
         );
 
         // ==========================================
@@ -226,8 +256,13 @@ module PoseidonTopLevel_standard #(
                 IDLE: begin
                     io_input_ready_logic = 1'b1;
                     if (io_input_valid) begin
-                        next_state = FEED_SBOX;
+                        next_state = ADD_RC;
                     end
+                end
+
+                ADD_RC: begin
+                    if (rc_cnt == 2'd3)
+                        next_state = elem_uses_sbox ? FEED_SBOX : BYPASS_SBOX;
                 end
                 
                 FEED_SBOX: begin
@@ -242,10 +277,8 @@ module PoseidonTopLevel_standard #(
                     if (sbox_out_valid) begin
                         if (sbox_idx == 4'd8) begin
                             next_state = START_MATRIX;
-                        end else if (is_partial_round) begin
-                            next_state = BYPASS_SBOX;
                         end else begin
-                            next_state = FEED_SBOX;
+                            next_state = ADD_RC;
                         end
                     end
                 end
@@ -254,7 +287,7 @@ module PoseidonTopLevel_standard #(
                     if (sbox_idx == 4'd8) begin
                         next_state = START_MATRIX;
                     end else begin
-                        next_state = BYPASS_SBOX;
+                        next_state = ADD_RC;
                     end
                 end
                 
@@ -270,7 +303,7 @@ module PoseidonTopLevel_standard #(
                         if (internal_round_idx == 7'd64) begin
                             next_state = DONE_STATE;
                         end else begin
-                            next_state = FEED_SBOX;
+                            next_state = ADD_RC;
                         end
                     end
                 end
@@ -317,13 +350,13 @@ module PoseidonTopLevel_standard #(
         for (genvar i = 0; i < 9; i++) begin : gen_sboxes
             assign par_const_idx[i] = (round_idx * 9) + i;
             
-            ModAdder_master #() add_round_const_par (
+            ModAdder #() add_round_const_par (
                 .op1_i(io_input_payload_sboxes[i]),
                 .op2_i(ROUND_CONSTANTS[par_const_idx[i]]),
                 .res_o(par_adder_out[i])
             );
 
-            sbox_master sbox_inst (
+            sbox sbox_inst (
                 .io_input_valid(io_input_valid_sboxes[i]),
                 .io_input_ready(io_input_ready_sboxes[i]),
                 .io_input_last(io_input_last_sboxes[i]),
@@ -360,7 +393,7 @@ module PoseidonTopLevel_standard #(
             end
         end
 
-        mix_layer_sequential_master #(.N(9)) mix_layer_inst (
+        mix_layer_sequential #(.N(9)) mix_layer_inst (
             .clk(clk),
             .reset(reset),
             .start(matrix_start),

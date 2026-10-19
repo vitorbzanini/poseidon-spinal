@@ -254,7 +254,9 @@ if (VERSION == 4) begin : gen_pipe_v4
 
     // ---------------- control: valid shift register + credits + FIFO -----------
     logic [LAT-1:0]     vsr;
-    logic [FIFO_AW-1:0] wr_ptr, rd_ptr;
+    logic [FIFO_AW-1:0] wr_ptr;
+    // rd_ptr enderecando a RAM distribuida de 255 bits (fanout ~258): pede replicacao
+    (* max_fanout = 16 *) logic [FIFO_AW-1:0] rd_ptr;
     logic [FIFO_AW:0]   inflight;
     logic               accept, push, pop;
     logic [WIDTH-1:0]   res_f;

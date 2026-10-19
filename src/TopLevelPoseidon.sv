@@ -26,9 +26,8 @@
 //
 // Interface identica ao TopLevelPoseidon (comparador paralelo).
 //
-// [TIMING] A round constant agora vem de um registrador (rc_q), pre-buscado no
-// mesmo clock em que a FSM avanca. Isso tira do caminho critico a multiplicacao
-// round*9+sbox_idx e o mux 585:1 da tabela. Nao adiciona ciclos de latencia.
+// Timing (100 MHz): registro na saida do modmul, AddRoundConstants em pipeline
+// (estado ADD_RC, 4 ciclos) e camadas de matriz com acumulacao sem reducao.
 // =============================================================================
 module PoseidonSequentialShared_top #(
     parameter bit ERROR_ON_FAULT = 1   // 0 = so sinaliza fault_detected_o, sem $error
@@ -71,6 +70,19 @@ module PoseidonSequentialShared_top #(
         .res_valid_o(shared_res_valid), .res_ready_i(1'b1), .res_o(shared_res)
     );
 
+    // Estagio de registro na saida do modmul (corte de timing).
+    // Separa "saida do modmul -> AND-OR dos clientes" de "-> ModAdder da matriz".
+    // Custa 1 ciclo por multiplicacao; todos os clientes esperam res_valid,
+    // entao a FSM nao muda.
+    logic         shared_res_valid_q;
+    logic [254:0] shared_res_q;
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) shared_res_valid_q <= 1'b0;
+        else       shared_res_valid_q <= shared_res_valid;
+    end
+    always_ff @(posedge clk) shared_res_q <= shared_res;
+
     // Clientes: encoder, decoder, sbox, matriz padrao, matriz codificada
     logic         enc_mul_valid, dec_mul_valid, sb_mul_valid, mxs_mul_valid, mxf_mul_valid;
     logic [254:0] enc_mul_op1, enc_mul_op2;
@@ -111,17 +123,15 @@ module PoseidonSequentialShared_top #(
     end
 
     logic enc_res_valid, dec_res_valid, sb_res_valid, mxs_res_valid, mxf_res_valid;
-    assign enc_res_valid = shared_res_valid && (owner == OWN_ENC);
-    assign dec_res_valid = shared_res_valid && (owner == OWN_DEC);
-    assign sb_res_valid  = shared_res_valid && (owner == OWN_SBOX);
-    assign mxs_res_valid = shared_res_valid && (owner == OWN_MIX_STD);
-    assign mxf_res_valid = shared_res_valid && (owner == OWN_MIX_FLT);
+    assign enc_res_valid = shared_res_valid_q && (owner == OWN_ENC);
+    assign dec_res_valid = shared_res_valid_q && (owner == OWN_DEC);
+    assign sb_res_valid  = shared_res_valid_q && (owner == OWN_SBOX);
+    assign mxs_res_valid = shared_res_valid_q && (owner == OWN_MIX_STD);
+    assign mxf_res_valid = shared_res_valid_q && (owner == OWN_MIX_FLT);
 
     // synthesis translate_off
-    // Ignora o reset: com estado inicial randomizado (Verilator --rand) o
-    // mul_req pode ser lixo antes do primeiro posedge de reset.
     always @(posedge clk) begin
-        if (!reset && $countones(mul_req) > 1)
+        if ($countones(mul_req) > 1)
             $error("[%0t] mais de um cliente requisitou o multiplicador: %b", $time, mul_req);
     end
     // synthesis translate_on
@@ -131,6 +141,7 @@ module PoseidonSequentialShared_top #(
     // ==========================================
     typedef enum logic [3:0] {
         IDLE,
+        ADD_RC,
         FEED_SBOX, WAIT_SBOX, BYPASS_SBOX,
         START_MATRIX, WAIT_MATRIX,
         LOAD_FAULT,
@@ -175,7 +186,7 @@ module PoseidonSequentialShared_top #(
         .wr_en_o(enc_wr_en), .wr_idx_o(enc_wr_idx), .wr_data_o(enc_wr_data),
         .mul_valid_o(enc_mul_valid), .mul_ready_i(shared_ready),
         .mul_op1_o(enc_mul_op1), .mul_op2_o(enc_mul_op2),
-        .mul_res_valid_i(enc_res_valid), .mul_res_i(shared_res)
+        .mul_res_valid_i(enc_res_valid), .mul_res_i(shared_res_q)
     );
 
     fault_decoder_out decoder_inst (
@@ -185,7 +196,7 @@ module PoseidonSequentialShared_top #(
         .wr_en_o(dec_wr_en), .wr_idx_o(dec_wr_idx), .wr_data_o(dec_wr_data),
         .mul_valid_o(dec_mul_valid), .mul_ready_i(shared_ready),
         .mul_op1_o(dec_mul_op1), .mul_op2_o(dec_mul_op2),
-        .mul_res_valid_i(dec_res_valid), .mul_res_i(shared_res)
+        .mul_res_valid_i(dec_res_valid), .mul_res_i(shared_res_q)
     );
 
     // ---------------- Round constants + S-box (compartilhados) ----------------
@@ -194,49 +205,36 @@ module PoseidonSequentialShared_top #(
     logic sbox_out_valid, sbox_out_ready;
     logic [254:0] sbox_out_payload;
 
+    // ---------------- AddRoundConstants em PIPELINE (4 ciclos, estado ADD_RC) ----------------
+    //   ciclo 1: seq_const_idx (= round*9+idx) e rc_x_q (mux 9:1 do estado)
+    //   ciclo 2: seq_selected_constant (ROM de constantes)
+    //   ciclo 3-4: ModAdder_pipe (2 estagios) -> seq_adder_out
+    // Os registradores seguem as entradas continuamente; o FSM espera 4 ciclos em
+    // ADD_RC antes de usar seq_adder_out.
+    logic [9:0]   seq_const_idx;
     logic [254:0] seq_selected_constant, seq_adder_out;
-
-    // ---- Round constant pre-buscada (rc_q) ----
-    // O indice original era round*9 + sbox_idx. Ele sempre avanca de 1 em 1:
-    //   * a cada elemento (WAIT_SBOX / BYPASS_SBOX, com sbox_idx < 8)
-    //   * na troca de rodada (sbox_idx esta saturado em 8 -> proximo e (round+1)*9)
-    // Entao basta um contador rc_next_idx e um registrador rc_q com a constante
-    // da posicao atual. As condicoes de avanco sao as mesmas que movem sbox_idx
-    // e internal_round_idx, logo rc_q == tabela[round*9 + sbox_idx] sempre.
-    localparam int NCONST = 65*9;
-
-    logic [254:0] rc_q;
-    logic [9:0]   rc_next_idx;
-    logic         rc_advance;
-
-    assign rc_advance =
-        (current_state == WAIT_SBOX   && sbox_out_valid && sbox_idx < 4'd8) ||
-        (current_state == BYPASS_SBOX                   && sbox_idx < 4'd8) ||
-        (current_state == WAIT_MATRIX && matrix_done    && internal_round_idx < 7'd64);
+    logic [254:0] rc_x_q;
+    logic [1:0]   rc_cnt;
 
     always_ff @(posedge clk) begin
-        if (current_state == IDLE) begin
-            // passo padrao comeca na constante 0 da tabela padrao
-            rc_q        <= ROUND_CONSTANTS[0];
-            rc_next_idx <= 10'd1;
-        end else if (current_state == LOAD_FAULT) begin
-            // passo codificado comeca na constante 0 da tabela de fault
-            rc_q        <= FAULT_ROUND_CONSTANTS[0];
-            rc_next_idx <= 10'd1;
-        end else if (rc_advance) begin
-            rc_q <= fault_mode ? FAULT_ROUND_CONSTANTS[rc_next_idx]
-                               : ROUND_CONSTANTS[rc_next_idx];
-            if (rc_next_idx != 10'(NCONST-1)) rc_next_idx <= rc_next_idx + 1'b1;
-        end
+        seq_const_idx         <= (internal_round_idx * 9) + sbox_idx;
+        rc_x_q                <= latched_input[sbox_idx];
+        seq_selected_constant <= fault_mode ? FAULT_ROUND_CONSTANTS[seq_const_idx]
+                                      : ROUND_CONSTANTS[seq_const_idx];
     end
 
-    assign seq_selected_constant = rc_q;
-
-    ModAdder #() add_round_const_seq (
-        .op1_i(latched_input[sbox_idx]),
+    ModAdder_pipe #() add_round_const_seq (
+        .clk(clk),
+        .op1_i(rc_x_q),
         .op2_i(seq_selected_constant),
         .res_o(seq_adder_out)
     );
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset)                         rc_cnt <= 2'd0;
+        else if (current_state == ADD_RC)  rc_cnt <= rc_cnt + 2'd1;
+        else                               rc_cnt <= 2'd0;
+    end
 
     assign sbox_in_payload = seq_adder_out;
 
@@ -251,7 +249,7 @@ module PoseidonSequentialShared_top #(
         .clk(clk), .reset(reset),
         .mul_valid_o(sb_mul_valid), .mul_ready_i(shared_ready),
         .mul_op1_o(sb_mul_op1), .mul_op2_o(sb_mul_op2),
-        .mul_res_valid_i(sb_res_valid), .mul_res_i(shared_res)
+        .mul_res_valid_i(sb_res_valid), .mul_res_i(shared_res_q)
     );
 
     // ---------------- Camadas de matriz (uma por modo) ----------------
@@ -268,7 +266,7 @@ module PoseidonSequentialShared_top #(
         .ready(mxs_ready), .done(mxs_done), .state_out(mxs_state_out),
         .mul_valid_o(mxs_mul_valid), .mul_ready_i(shared_ready),
         .mul_op1_o(mxs_mul_op1), .mul_op2_o(mxs_mul_op2),
-        .mul_res_valid_i(mxs_res_valid), .mul_res_i(shared_res)
+        .mul_res_valid_i(mxs_res_valid), .mul_res_i(shared_res_q)
     );
 
     mix_layer_fault #(.N(9)) mix_flt_inst (
@@ -279,7 +277,7 @@ module PoseidonSequentialShared_top #(
         .ready(mxf_ready), .done(mxf_done), .state_out(mxf_state_out),
         .mul_valid_o(mxf_mul_valid), .mul_ready_i(shared_ready),
         .mul_op1_o(mxf_mul_op1), .mul_op2_o(mxf_mul_op2),
-        .mul_res_valid_i(mxf_res_valid), .mul_res_i(shared_res)
+        .mul_res_valid_i(mxf_res_valid), .mul_res_i(shared_res_q)
     );
 
     assign matrix_ready     = fault_mode ? mxf_ready     : mxs_ready;
@@ -291,15 +289,9 @@ module PoseidonSequentialShared_top #(
     logic [3:0] sbox_pos;
     assign sbox_pos = fault_mode ? 4'(SBOX_POS_PARTIAL) : 4'd0;
 
-    logic [3:0] sbox_idx_nxt;
-    assign sbox_idx_nxt = sbox_idx + 1'b1;
-
-    logic nxt_elem_uses_sbox;
-    assign nxt_elem_uses_sbox = !is_partial_round || (sbox_idx_nxt == sbox_pos);
-
-    logic next_round_partial, first_elem_uses_sbox;
-    assign next_round_partial   = (internal_round_idx >= 7'd3) && (internal_round_idx <= 7'd59);
-    assign first_elem_uses_sbox = !next_round_partial || (sbox_pos == 4'd0);
+    // Em partial round so a posicao sbox_pos passa pelo S-box; as outras fazem bypass
+    logic elem_uses_sbox;
+    assign elem_uses_sbox = !is_partial_round || (sbox_idx == sbox_pos);
 
     // ---------------- Permutacao (so no modo codificado) ----------------
     logic [0:8][254:0] permuted_input;
@@ -381,7 +373,11 @@ module PoseidonSequentialShared_top #(
 
         case (current_state)
             IDLE: begin
-                if (io_input_valid) next_state = FEED_SBOX;
+                if (io_input_valid) next_state = ADD_RC;
+            end
+            ADD_RC: begin
+                if (rc_cnt == 2'd3)
+                    next_state = elem_uses_sbox ? FEED_SBOX : BYPASS_SBOX;
             end
             FEED_SBOX: begin
                 sbox_in_valid = 1'b1;
@@ -391,12 +387,12 @@ module PoseidonSequentialShared_top #(
                 sbox_out_ready = 1'b1;
                 if (sbox_out_valid) begin
                     if (sbox_idx == 4'd8) next_state = START_MATRIX;
-                    else next_state = nxt_elem_uses_sbox ? FEED_SBOX : BYPASS_SBOX;
+                    else next_state = ADD_RC;
                 end
             end
             BYPASS_SBOX: begin
                 if (sbox_idx == 4'd8) next_state = START_MATRIX;
-                else next_state = nxt_elem_uses_sbox ? FEED_SBOX : BYPASS_SBOX;
+                else next_state = ADD_RC;
             end
             START_MATRIX: begin
                 matrix_start = 1'b1;
@@ -407,13 +403,13 @@ module PoseidonSequentialShared_top #(
                     if (internal_round_idx == 7'd64)
                         next_state = fault_mode ? DECODE_START : LOAD_FAULT;
                     else
-                        next_state = first_elem_uses_sbox ? FEED_SBOX : BYPASS_SBOX;
+                        next_state = ADD_RC;
                 end
             end
             LOAD_FAULT:   next_state = ENCODE_START;
             ENCODE_START: next_state = ENCODE_WAIT;
             ENCODE_WAIT: begin
-                if (enc_done) next_state = FEED_SBOX;
+                if (enc_done) next_state = ADD_RC;
             end
             DECODE_START: next_state = DECODE_WAIT;
             DECODE_WAIT: begin

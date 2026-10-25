@@ -15,7 +15,9 @@
 //    feita quando os dois estao com output_valid = 1.
 //  * O resultado entregue na saida e o do design padrao.
 // =============================================================================
-module TopLevelPoseidon (
+module TopLevelPoseidon #(
+    parameter bit ERROR_ON_FAULT = 1   // 0 = so sinaliza fault_detected_o, sem $error (usado no testbench)
+) (
     input               io_input_valid,
     output              io_input_ready,
     input               io_input_last,
@@ -109,7 +111,7 @@ module TopLevelPoseidon (
     // Somente simulacao
     // synthesis translate_off
     always @(posedge clk) begin
-        if (fault_detected_o && io_output_ready)
+        if (ERROR_ON_FAULT && fault_detected_o && io_output_ready)
             $error("[%0t] FALHA DETECTADA: saidas divergem. mask=%b", $time, fault_mask_o);
     end
     // synthesis translate_on

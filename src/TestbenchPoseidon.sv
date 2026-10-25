@@ -44,7 +44,7 @@ module TestbenchPoseidon;
     wire               fault_sticky_o;
 
     // ---------------- DUT ----------------
-    TopLevelPoseidon dut (
+    TopLevelPoseidon #(.ERROR_ON_FAULT(1'b0)) dut (
         .io_input_valid   (io_input_valid),
         .io_input_ready   (io_input_ready),
         .io_input_last    (io_input_last),

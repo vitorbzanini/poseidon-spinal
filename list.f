@@ -1,0 +1,10 @@
+-Isrc/main/verilog
+src/main/verilog/fault_decoder_out.sv
+src/main/verilog/fault_encoder_in.sv
+src/main/verilog/ModAdder_pipe.sv
+src/main/verilog/matrix_multiplcation.sv
+src/main/verilog/ModAdder.v
+src/main/verilog/modmul.sv
+src/main/verilog/sbox.sv
+src/main/verilog/PoseidonTopLevel_wrapper.sv
+src/main/verilog/PoseidonTopLevelTestbench.sv

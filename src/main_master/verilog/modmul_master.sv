@@ -201,11 +201,381 @@ module modmul_pipe_mult #(
     );
 endmodule
 
+// ----------------------------------------------------------------------------
+// Variante _dsp : forca os tiles em DSP48 (multiplicador A: operandos variaveis)
+// ----------------------------------------------------------------------------
+module modmul_pipe_mult_dsp #(
+    parameter LOWONLY = 0,
+    parameter SBW     = 1,
+    parameter S       = 128,
+    parameter PW      = LOWONLY ? 256 : 512
+)(
+    input  logic           clk,
+    input  logic [255:0]   a,
+    input  logic [255:0]   b,
+    input  logic [SBW-1:0] sb_i,
+    output logic [PW-1:0]  p,
+    output logic [SBW-1:0] sb_o
+);
+    localparam NC = LOWONLY ? 16 : 32;     // number of 16-bit result limbs
+
+    // ---- stage 0 : input registers ------------------------------------------
+    logic [15:0]    ar [0:15];
+    logic [15:0]    br [0:15];
+    logic [SBW-1:0] sb0, sb1, sb2, sb3, sb4, sb5;
+
+    always_ff @(posedge clk) begin
+        for (int i = 0; i < 16; i++) begin
+            ar[i] <= a[16*i +: 16];
+            br[i] <= b[16*i +: 16];
+        end
+        sb0 <= sb_i;
+        sb1 <= sb0;
+        sb2 <= sb1;
+        sb3 <= sb2;
+        sb4 <= sb3;
+        sb5 <= sb4;
+    end
+
+    // ---- stage 1 : 16x16 tile products (DSP48, registered) --------------------
+    (* use_dsp48 = "yes" *) logic [31:0] pr [0:15][0:15];
+    genvar gi, gj, k, gg, q;
+    generate
+        for (gi = 0; gi < 16; gi++) begin : rowi
+            for (gj = 0; gj < 16; gj++) begin : colj
+                if (gi + gj < NC) begin : used
+                    always_ff @(posedge clk) pr[gi][gj] <= ar[gi] * br[gj];
+                end
+            end
+        end
+    endgenerate
+
+    // ---- stage 2/3 : column sums  C_k = sum_{i+j=k} pr[i][j]  (36 bits) --------
+    logic [35:0] cc [0:NC-1];
+    generate
+        for (k = 0; k < NC; k++) begin : col
+            localparam LO = (k > 15) ? (k - 15) : 0;
+            localparam HI = (k < 15) ? k : 15;
+            logic [35:0] s1 [0:3];
+            for (gg = 0; gg < 4; gg++) begin : grp
+                logic [35:0] term [0:3];
+                for (q = 0; q < 4; q++) begin : t
+                    localparam I = LO + 4*gg + q;
+                    if (I <= HI) begin : y
+                        assign term[q] = {4'd0, pr[I][k-I]};
+                    end else begin : n
+                        assign term[q] = 36'd0;
+                    end
+                end
+                always_ff @(posedge clk) s1[gg] <= term[0] + term[1] + term[2] + term[3];
+            end
+            always_ff @(posedge clk) cc[k] <= s1[0] + s1[1] + s1[2] + s1[3];
+        end
+    endgenerate
+
+    // ---- stage 4/5 : carry normalisation rounds --------------------------------
+    logic [20:0] dd [0:NC-1];
+    logic [16:0] ee [0:NC-1];
+    generate
+        for (k = 0; k < NC; k++) begin : norm
+            if (k == 0) begin : k0
+                always_ff @(posedge clk) begin
+                    dd[k] <= {5'd0, cc[k][15:0]};
+                    ee[k] <= {1'b0, dd[k][15:0]};
+                end
+            end else begin : kn
+                always_ff @(posedge clk) begin
+                    dd[k] <= {5'd0, cc[k][15:0]} + {1'b0, cc[k-1][35:16]};
+                    ee[k] <= {1'b0, dd[k][15:0]} + {12'd0, dd[k-1][20:16]};
+                end
+            end
+        end
+    endgenerate
+
+    // ---- final : L + H  (sliced pipelined adder) ---------------------------------
+    logic [PW-1:0] lv, hv;
+    generate
+        for (k = 0; k < NC; k++) begin : asm
+            assign lv[16*k +: 16] = ee[k][15:0];
+            if (k == 0) begin : h0
+                assign hv[16*k +: 16] = 16'd0;
+            end else begin : hn
+                assign hv[16*k +: 16] = {15'd0, ee[k-1][16]};
+            end
+        end
+    endgenerate
+
+    modmul_pipe_add #(.W(PW), .S(S), .SBW(SBW)) u_add (
+        .clk (clk),
+        .a   (lv),
+        .b   (hv),
+        .cin (1'b0),
+        .sb_i(sb5),
+        .sum (p),
+        .cout(),
+        .sb_o(sb_o)
+    );
+endmodule
+
+// ----------------------------------------------------------------------------
+// Variante _lut (antiga): forca tiles em LUT, mas o operando B ainda passa por
+// registrador br[], entao o sintetizador NAO enxerga a constante.
+// Mantida so por compatibilidade; o modmul V4 agora usa modmul_pipe_mult_const.
+// ----------------------------------------------------------------------------
+module modmul_pipe_mult_lut #(
+    parameter LOWONLY = 0,
+    parameter SBW     = 1,
+    parameter S       = 128,
+    parameter PW      = LOWONLY ? 256 : 512
+)(
+    input  logic           clk,
+    input  logic [255:0]   a,
+    input  logic [255:0]   b,
+    input  logic [SBW-1:0] sb_i,
+    output logic [PW-1:0]  p,
+    output logic [SBW-1:0] sb_o
+);
+    localparam NC = LOWONLY ? 16 : 32;     // number of 16-bit result limbs
+
+    // ---- stage 0 : input registers ------------------------------------------
+    logic [15:0]    ar [0:15];
+    logic [15:0]    br [0:15];
+    logic [SBW-1:0] sb0, sb1, sb2, sb3, sb4, sb5;
+
+    always_ff @(posedge clk) begin
+        for (int i = 0; i < 16; i++) begin
+            ar[i] <= a[16*i +: 16];
+            br[i] <= b[16*i +: 16];
+        end
+        sb0 <= sb_i;
+        sb1 <= sb0;
+        sb2 <= sb1;
+        sb3 <= sb2;
+        sb4 <= sb3;
+        sb5 <= sb4;
+    end
+
+    // ---- stage 1 : 16x16 tile products (LUT, registered) ----------------------
+    (* use_dsp48 = "no" *) logic [31:0] pr [0:15][0:15];
+    genvar gi, gj, k, gg, q;
+    generate
+        for (gi = 0; gi < 16; gi++) begin : rowi
+            for (gj = 0; gj < 16; gj++) begin : colj
+                if (gi + gj < NC) begin : used
+                    always_ff @(posedge clk) pr[gi][gj] <= ar[gi] * br[gj];
+                end
+            end
+        end
+    endgenerate
+
+    // ---- stage 2/3 : column sums  C_k = sum_{i+j=k} pr[i][j]  (36 bits) --------
+    logic [35:0] cc [0:NC-1];
+    generate
+        for (k = 0; k < NC; k++) begin : col
+            localparam LO = (k > 15) ? (k - 15) : 0;
+            localparam HI = (k < 15) ? k : 15;
+            logic [35:0] s1 [0:3];
+            for (gg = 0; gg < 4; gg++) begin : grp
+                logic [35:0] term [0:3];
+                for (q = 0; q < 4; q++) begin : t
+                    localparam I = LO + 4*gg + q;
+                    if (I <= HI) begin : y
+                        assign term[q] = {4'd0, pr[I][k-I]};
+                    end else begin : n
+                        assign term[q] = 36'd0;
+                    end
+                end
+                always_ff @(posedge clk) s1[gg] <= term[0] + term[1] + term[2] + term[3];
+            end
+            always_ff @(posedge clk) cc[k] <= s1[0] + s1[1] + s1[2] + s1[3];
+        end
+    endgenerate
+
+    // ---- stage 4/5 : carry normalisation rounds --------------------------------
+    logic [20:0] dd [0:NC-1];
+    logic [16:0] ee [0:NC-1];
+    generate
+        for (k = 0; k < NC; k++) begin : norm
+            if (k == 0) begin : k0
+                always_ff @(posedge clk) begin
+                    dd[k] <= {5'd0, cc[k][15:0]};
+                    ee[k] <= {1'b0, dd[k][15:0]};
+                end
+            end else begin : kn
+                always_ff @(posedge clk) begin
+                    dd[k] <= {5'd0, cc[k][15:0]} + {1'b0, cc[k-1][35:16]};
+                    ee[k] <= {1'b0, dd[k][15:0]} + {12'd0, dd[k-1][20:16]};
+                end
+            end
+        end
+    endgenerate
+
+    // ---- final : L + H  (sliced pipelined adder) ---------------------------------
+    logic [PW-1:0] lv, hv;
+    generate
+        for (k = 0; k < NC; k++) begin : asm
+            assign lv[16*k +: 16] = ee[k][15:0];
+            if (k == 0) begin : h0
+                assign hv[16*k +: 16] = 16'd0;
+            end else begin : hn
+                assign hv[16*k +: 16] = {15'd0, ee[k-1][16]};
+            end
+        end
+    endgenerate
+
+    modmul_pipe_add #(.W(PW), .S(S), .SBW(SBW)) u_add (
+        .clk (clk),
+        .a   (lv),
+        .b   (hv),
+        .cin (1'b0),
+        .sb_i(sb5),
+        .sum (p),
+        .cout(),
+        .sb_o(sb_o)
+    );
+endmodule
+
+
+// ============================================================================
+// modmul_pipe_mult_const : multiplicador pipelined 256 x CONSTANTE
+//
+//   O operando B e um PARAMETRO (CB), nao uma porta. Nao existe registrador
+//   br[]. Cada tile usa diretamente o limb de 16 bits da constante:
+//       ar[i] * LIMB_j
+//   Assim o sintetizador enxerga a constante e simplifica:
+//       limb 0x0000 -> tile some (produto 0)
+//       limb 0x0001 -> tile vira so um registrador
+//       limb 0xffff -> tile vira (a<<16) - a
+//       outros      -> shift-and-add so nos bits em 1
+//
+//   Latencia identica as outras variantes: 6 + PW/S ciclos.
+//   USE_DSP = 0 : tiles em LUT.   USE_DSP = 1 : tiles em DSP48.
+// ============================================================================
+module modmul_pipe_mult_const #(
+    parameter LOWONLY = 0,
+    parameter SBW     = 1,
+    parameter S       = 128,
+    parameter PW      = LOWONLY ? 256 : 512,
+    parameter [255:0] CB = 256'd0,
+    parameter USE_DSP = 0
+)(
+    input  logic           clk,
+    input  logic [255:0]   a,
+    input  logic [SBW-1:0] sb_i,
+    output logic [PW-1:0]  p,
+    output logic [SBW-1:0] sb_o
+);
+    localparam NC = LOWONLY ? 16 : 32;
+
+    // ---- stage 0 : registradores de entrada (so o operando variavel) --------
+    logic [15:0]    ar [0:15];
+    logic [SBW-1:0] sb0, sb1, sb2, sb3, sb4, sb5;
+
+    always_ff @(posedge clk) begin
+        for (int i = 0; i < 16; i++)
+            ar[i] <= a[16*i +: 16];
+        sb0 <= sb_i;
+        sb1 <= sb0;
+        sb2 <= sb1;
+        sb3 <= sb2;
+        sb4 <= sb3;
+        sb5 <= sb4;
+    end
+
+    // ---- stage 1 : tiles 16x16 por constante ---------------------------------
+    logic [31:0] pr [0:15][0:15];
+    genvar gi, gj, k, gg, q;
+    generate
+        for (gi = 0; gi < 16; gi++) begin : rowi
+            for (gj = 0; gj < 16; gj++) begin : colj
+                if (gi + gj < NC) begin : used
+                    localparam logic [15:0] LIMB = CB[16*gj +: 16];
+                    if (USE_DSP) begin : dsp
+                        (* use_dsp48 = "yes" *) logic [31:0] t;
+                        always_ff @(posedge clk) t <= ar[gi] * LIMB;
+                        assign pr[gi][gj] = t;
+                    end else begin : lut
+                        (* use_dsp48 = "no" *) logic [31:0] t;
+                        always_ff @(posedge clk) t <= ar[gi] * LIMB;
+                        assign pr[gi][gj] = t;
+                    end
+                end
+            end
+        end
+    endgenerate
+
+    // ---- stage 2/3 : somas de coluna  C_k = sum_{i+j=k} pr[i][j] -------------
+    logic [35:0] cc [0:NC-1];
+    generate
+        for (k = 0; k < NC; k++) begin : col
+            localparam LO = (k > 15) ? (k - 15) : 0;
+            localparam HI = (k < 15) ? k : 15;
+            logic [35:0] s1 [0:3];
+            for (gg = 0; gg < 4; gg++) begin : grp
+                logic [35:0] term [0:3];
+                for (q = 0; q < 4; q++) begin : t
+                    localparam I = LO + 4*gg + q;
+                    if (I <= HI) begin : y
+                        assign term[q] = {4'd0, pr[I][k-I]};
+                    end else begin : n
+                        assign term[q] = 36'd0;
+                    end
+                end
+                always_ff @(posedge clk) s1[gg] <= term[0] + term[1] + term[2] + term[3];
+            end
+            always_ff @(posedge clk) cc[k] <= s1[0] + s1[1] + s1[2] + s1[3];
+        end
+    endgenerate
+
+    // ---- stage 4/5 : normalizacao de carry ------------------------------------
+    logic [20:0] dd [0:NC-1];
+    logic [16:0] ee [0:NC-1];
+    generate
+        for (k = 0; k < NC; k++) begin : norm
+            if (k == 0) begin : k0
+                always_ff @(posedge clk) begin
+                    dd[k] <= {5'd0, cc[k][15:0]};
+                    ee[k] <= {1'b0, dd[k][15:0]};
+                end
+            end else begin : kn
+                always_ff @(posedge clk) begin
+                    dd[k] <= {5'd0, cc[k][15:0]} + {1'b0, cc[k-1][35:16]};
+                    ee[k] <= {1'b0, dd[k][15:0]} + {12'd0, dd[k-1][20:16]};
+                end
+            end
+        end
+    endgenerate
+
+    // ---- final : L + H (somador fatiado) --------------------------------------
+    logic [PW-1:0] lv, hv;
+    generate
+        for (k = 0; k < NC; k++) begin : asm
+            assign lv[16*k +: 16] = ee[k][15:0];
+            if (k == 0) begin : h0
+                assign hv[16*k +: 16] = 16'd0;
+            end else begin : hn
+                assign hv[16*k +: 16] = {15'd0, ee[k-1][16]};
+            end
+        end
+    endgenerate
+
+    modmul_pipe_add #(.W(PW), .S(S), .SBW(SBW)) u_add (
+        .clk (clk),
+        .a   (lv),
+        .b   (hv),
+        .cin (1'b0),
+        .sb_i(sb5),
+        .sum (p),
+        .cout(),
+        .sb_o(sb_o)
+    );
+endmodule
+
 
 // ============================================================================
 // modmul
 // ============================================================================
-module modmul_master
+module modmul_master 
 #(
     parameter VERSION  = 4,   // 1 = 3 mults, 2 = 1 mult, 3 = 2 mults (Middle-ground)
                               // 4 = FULLY PIPELINED, timing-optimised (100 MHz target)
@@ -290,24 +660,28 @@ if (VERSION == 4) begin : gen_pipe_v4
     assign opa = 256'(op1_i);
     assign opb = 256'(op2_i);
 
-    // S1: T = op1 * op2
+    // S1: T = op1 * op2   (os dois operandos variam -> DSP)
     logic [511:0] t_a, p_unused;
     logic [0:0]   sb_unused_a;
-    modmul_pipe_mult #(.LOWONLY(0), .SBW(1), .S(SL)) u_mult_a (
+    modmul_pipe_mult_dsp #(.LOWONLY(0), .SBW(1), .S(SL)) u_mult_a (
         .clk(clk), .a(opa), .b(opb), .sb_i(1'b0), .p(t_a), .sb_o(sb_unused_a)
     );
 
     // S2: m = low256(T_low * N_LINE); T travels along as sideband
+    //     N_LINE e constante de verdade (parametro), sem registrador no meio.
     logic [255:0] m_b;
     logic [511:0] t_b;
-    modmul_pipe_mult #(.LOWONLY(1), .SBW(512), .S(SL)) u_mult_b (
-        .clk(clk), .a(t_a[255:0]), .b(N_LINE), .sb_i(t_a), .p(m_b), .sb_o(t_b)
+    modmul_pipe_mult_const #(.LOWONLY(1), .SBW(512), .S(SL),
+                             .CB(N_LINE), .USE_DSP(0)) u_mult_b (
+        .clk(clk), .a(t_a[255:0]), .sb_i(t_a), .p(m_b), .sb_o(t_b)
     );
 
     // S3: P = m * MODULUS; T keeps travelling
+    //     MODULUS tambem e constante. Se faltar LUT, troque USE_DSP(0) por (1).
     logic [511:0] p_c, t_c;
-    modmul_pipe_mult #(.LOWONLY(0), .SBW(512), .S(SL)) u_mult_c (
-        .clk(clk), .a(m_b), .b(256'(MODULUS)), .sb_i(t_b), .p(p_c), .sb_o(t_c)
+    modmul_pipe_mult_const #(.LOWONLY(0), .SBW(512), .S(SL),
+                             .CB({1'b0, MODULUS}), .USE_DSP(0)) u_mult_c (
+        .clk(clk), .a(m_b), .sb_i(t_b), .p(p_c), .sb_o(t_c)
     );
 
     // S4: sum = T + P ; t3 = sum >> 256  (257 bits, including the carry out)

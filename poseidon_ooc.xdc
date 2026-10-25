@@ -14,7 +14,7 @@
 # Nao ha constraints de pino (LOC / IOSTANDARD): em out-of-context o Vivado nao
 # coloca os ~4600 bits de I/O em pinos fisicos.
 #
-# Fmax estimado = 1 / (PERIODO - WNS)   [WNS do report_timing_summary pos-route]
+# Fmax estimado = 1000 / (PERIODO - WNS)   [WNS do report_timing_summary pos-route]
 # =============================================================================
 
 # ---------------- Clock ----------------
@@ -34,7 +34,7 @@ set_clock_uncertainty 0.000 [get_clocks clk]
 # Atrasos de I/O zero em relacao ao clock: nenhum caminho de I/O e penalizado,
 # o periodo critico e definido pelos caminhos registrador -> registrador
 # (modmul), que e o que importa para o Fmax.
-set_input_delay  -clock clk 0.000 [get_ports -filter {NAME != clk && NAME != reset} -of_objects [all_inputs]]
+set_input_delay  -clock clk 0.000 [get_ports -filter {DIRECTION == IN && NAME != clk && NAME != reset}]
 set_output_delay -clock clk 0.000 [all_outputs]
 
 # ---------------- Reset ----------------
@@ -42,7 +42,7 @@ set_output_delay -clock clk 0.000 [all_outputs]
 # temporizado.
 set_false_path -from [get_ports reset]
 
-# ---------------- Atividade para potencia (vectorless) ----------------
-# Estimativa sem simulacao. Para numero confiavel, gere um SAIF da simulacao
-# post-route e use: read_saif ...; report_power
-set_switching_activity -default_toggle_rate 12.5 -default_static_probability 0.5 [get_nets -hier -filter {TYPE == SIGNAL}]
+# ---------------- Potencia ----------------
+# Sem set_switching_activity: aplicar a todas as nets (centenas de milhares)
+# deixava a sintese/implementacao muito lenta. O report_power vectorless usa as
+# taxas padrao do Vivado, o que e aceitavel para comparar os designs entre si.
